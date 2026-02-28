@@ -37,7 +37,7 @@ pip install tempo-bio
 
 Or from source:
 ```bash
-git clone https://github.com/yourusername/TEMPO.git
+git clone https://github.com/cbumby17/TEMPO.git
 cd TEMPO
 pip install -e .
 ```

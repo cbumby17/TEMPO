@@ -81,7 +81,7 @@ statistical follow-up → evaluate against ground truth**.
 
 ## Source code and documentation
 
-GitHub: [https://github.com/yourusername/TEMPO](https://github.com/yourusername/TEMPO)
+GitHub: [https://github.com/cbumby17/TEMPO](https://github.com/cbumby17/TEMPO)
 \
 """),
 
