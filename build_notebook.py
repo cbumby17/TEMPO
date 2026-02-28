@@ -628,6 +628,33 @@ A small p-value means the observed case enrichment at this window is unlikely \
 to arise by chance under random labelling.\
 """),
 
+md("""\
+### Multi-window scanning
+
+A key practical challenge is that the "right" window size is unknown before analysis. \
+Choosing too small a window misses the full extent of the motif; \
+too large a window dilutes the signal by including non-motif timepoints on either side.
+
+`harbinger()` solves this with **multi-window scanning**: instead of committing to a \
+single window size upfront, you can pass:
+
+- `window_sizes=[3, 5, 7]` — try an explicit list of sizes.
+- `window_size_range=(3, 8)` — try every integer from 3 to 8 inclusive.
+
+For each feature, TEMPO scans all candidate sizes and picks the (size, position) pair \
+with the highest enrichment score — effectively letting the data vote on the best window. \
+The permutation test then runs once, on the winning pair.
+
+**A note on conservatism**: selecting the best size out of multiple candidates introduces \
+a mild selection bias — the observed score is slightly inflated relative to the null \
+(because we effectively maximised over several tests). \
+The permutation test accounts for the magnitude of the winning score but not the \
+size-selection step itself. In practice this is a small effect when the candidate range \
+is narrow and the signal is strong, but it is worth keeping in mind when p-values are \
+borderline. Think of multi-window scanning as an exploratory tool for identifying \
+promising features, with fixed-window follow-up for rigorous confirmation.\
+"""),
+
 code("""\
 from tempo.harbinger import harbinger
 
@@ -639,8 +666,11 @@ df_h = simulate.simulate_longitudinal(
     motif_strength=2.5, seed=42
 )
 
-results = harbinger(df_h, window_size=3, top_k=10)
-print('Harbinger results (sorted by enrichment score):')
+# Multi-window scan: try sizes 3, 4, 5 — covers windows shorter than, equal to,
+# and slightly longer than the true signal extent. Each feature independently
+# picks its best size. (STUMPY requires m >= 3, so size 2 would be skipped.)
+results = harbinger(df_h, window_sizes=[3, 4, 5], top_k=10)
+print('Harbinger results — multi-window scan (sizes 3, 4, 5):')
 print(results.to_string())
 
 truth_h = simulate.get_ground_truth(df_h)
@@ -661,8 +691,10 @@ Key things to look for:
 - **True motif features** (`feature_000`, `feature_001`, `feature_002`) should appear \
   near the top with positive enrichment scores and small p-values.
 - **Noise features** should cluster near zero enrichment with large p-values.
+- **window_size**: the winning subsequence length for each feature — with multi-window \
+  scanning, different features may select different sizes.
 - **motif_window**: each feature gets its own independently-discovered window \
-  (the argmin of its pan-matrix profile), so they won't necessarily all agree. \
+  (the argmin of the pan-matrix profile at the winning size). \
   The evaluation report uses the top feature's window.
 - **matrix_profile_min**: how strongly the case trajectories agree on a shared pattern. \
   Lower = more conserved motif.
@@ -959,7 +991,7 @@ from tempo.harbinger import harbinger
 # Run harbinger on the continuous simulation
 results_v = harbinger(df_v, window_size=3, top_k=8, n_permutations=199, seed=42)
 print('Harbinger results:')
-print(results_v[['feature', 'motif_window', 'enrichment_score', 'p_value']].to_string(index=False))
+print(results_v[['feature', 'window_size', 'motif_window', 'enrichment_score', 'p_value']].to_string(index=False))
 print()\
 """),
 

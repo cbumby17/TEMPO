@@ -10,11 +10,20 @@ vs controls. Uses STUMPY for efficient matrix profile computation.
 
 Core algorithm (per feature):
     1. Pivot long-format data to a subjects × timepoints matrix.
-    2. Compute the pan-matrix profile across case subjects with mstump —
-       this finds the window where ALL cases show the most conserved pattern.
-    3. Score enrichment at the best motif window: mean(case) − mean(ctrl).
-    4. Permute outcome labels to build a null distribution and derive p-values.
+    2. For each candidate window size, compute the pan-matrix profile
+       across case subjects with mstump — this finds the window where
+       ALL cases show the most conserved pattern.
+    3. Select the (size, position) pair with the highest enrichment score
+       across all candidate sizes.
+    4. Permute outcome labels once (for the winning window) to derive p-values.
     5. Return results ranked by enrichment score.
+
+Note on multiple window sizes: scanning multiple sizes and picking the best
+enrichment score is slightly anti-conservative (selection bias inflates the
+observed score relative to the null). The permutation test accounts for the
+observed score's magnitude but not the size-selection step itself. Results
+should be interpreted with this in mind, especially when the range of
+candidate sizes is large.
 """
 
 import numpy as np
@@ -23,9 +32,54 @@ import stumpy
 from typing import Optional
 
 
+def _resolve_window_sizes(
+    window_size: Optional[int],
+    window_sizes: Optional[list],
+    window_size_range: Optional[tuple],
+) -> list:
+    """Resolve the three size-specifying params into a single list of ints.
+
+    Exactly one of the three may be non-None. If all three are None, defaults
+    to [3] (backward-compatible with the original single-size default).
+
+    Parameters
+    ----------
+    window_size : int, optional
+        Single window size — resolved to [window_size].
+    window_sizes : list, optional
+        Explicit list of sizes — returned as-is.
+    window_size_range : tuple, optional
+        (min_size, max_size) inclusive — expanded to list(range(min, max+1)).
+
+    Returns
+    -------
+    list of int
+
+    Raises
+    ------
+    ValueError
+        If more than one of the three parameters is non-None.
+    """
+    n_given = sum(x is not None for x in [window_size, window_sizes, window_size_range])
+    if n_given > 1:
+        raise ValueError(
+            "Provide at most one of window_size, window_sizes, or window_size_range."
+        )
+    if window_size is not None:
+        return [window_size]
+    if window_sizes is not None:
+        return list(window_sizes)
+    if window_size_range is not None:
+        lo, hi = window_size_range
+        return list(range(lo, hi + 1))
+    return [3]  # default
+
+
 def harbinger(
     df: pd.DataFrame,
-    window_size: int = 3,
+    window_size: Optional[int] = None,
+    window_sizes: Optional[list] = None,
+    window_size_range: Optional[tuple] = None,
     top_k: int = 10,
     outcome_col: str = "outcome",
     n_permutations: int = 1000,
@@ -37,15 +91,32 @@ def harbinger(
     Identifies features with trajectory motifs enriched in the case outcome
     group (outcome == 1) using matrix profile-based motif discovery via STUMPY.
 
+    Window size can be specified in three ways (at most one may be given):
+    - ``window_size=k`` — single fixed size (backward-compatible default = 3).
+    - ``window_sizes=[3, 5, 7]`` — explicit list of sizes to try.
+    - ``window_size_range=(3, 8)`` — try every integer from 3 to 8 inclusive.
+
+    When multiple sizes are given, each feature independently selects the size
+    that maximises its enrichment score. The permutation test runs once per
+    feature on the winning (size, window) pair.
+
     Parameters
     ----------
     df : pd.DataFrame
         Long-format dataframe with columns:
         subject_id, timepoint, feature, value, outcome.
         Typically the output of simulate_longitudinal() or preprocess().
-    window_size : int
-        Subsequence length (in timepoints) for matrix profile computation.
-        Must be < n_timepoints. Larger windows detect broader motifs.
+    window_size : int, optional
+        Single subsequence length. Raises ValueError if >= n_timepoints.
+        Mutually exclusive with window_sizes and window_size_range.
+    window_sizes : list of int, optional
+        Explicit list of subsequence lengths to scan per feature.
+        Sizes >= n_timepoints for a given feature are silently skipped.
+        Mutually exclusive with window_size and window_size_range.
+    window_size_range : tuple of (int, int), optional
+        (min_size, max_size) inclusive. Every integer in this range is tried.
+        Sizes >= n_timepoints for a given feature are silently skipped.
+        Mutually exclusive with window_size and window_sizes.
     top_k : int
         Maximum number of top-ranked features to return.
     outcome_col : str
@@ -60,6 +131,7 @@ def harbinger(
     pd.DataFrame
         Results with columns:
           feature            — feature name
+          window_size        — the winning window size (int) for this feature
           motif_window       — (start, end) timepoint tuple of the best motif
           enrichment_score   — mean(case values) − mean(ctrl values) in window
           p_value            — fraction of permutations with score ≥ observed
@@ -69,7 +141,8 @@ def harbinger(
     Raises
     ------
     ValueError
-        If window_size >= n_timepoints.
+        If window_size >= n_timepoints (single-size backward-compat check).
+        If more than one of window_size, window_sizes, window_size_range is given.
 
     Examples
     --------
@@ -78,11 +151,18 @@ def harbinger(
     >>> df = simulate.simulate_longitudinal(seed=0)
     >>> results = harbinger(df, window_size=3, top_k=5)
     >>> results.head()
+
+    >>> # Multi-window scan
+    >>> results = harbinger(df, window_sizes=[2, 3, 4], top_k=5)
+    >>> results = harbinger(df, window_size_range=(2, 5), top_k=5)
     """
+    sizes = _resolve_window_sizes(window_size, window_sizes, window_size_range)
+
     rng = np.random.default_rng(seed)
 
+    # Backward-compat: single window_size still raises on invalid input.
     n_timepoints = df["timepoint"].nunique()
-    if window_size >= n_timepoints:
+    if window_size is not None and window_size >= n_timepoints:
         raise ValueError(
             f"window_size ({window_size}) must be less than "
             f"n_timepoints ({n_timepoints})."
@@ -96,6 +176,7 @@ def harbinger(
             .reindex(sorted(feat_df["timepoint"].unique()), axis=1)
         )
         timepoints = wide.columns.tolist()  # actual timepoint values, sorted
+        n_tp = len(timepoints)
 
         outcome_map = feat_df.groupby("subject_id")[outcome_col].first()
         case_subj = outcome_map[outcome_map == 1].index.tolist()
@@ -104,47 +185,59 @@ def harbinger(
         if len(case_subj) < 2:
             continue
 
-        # Pan-matrix profile: most conserved window across ALL case subjects.
-        # mstump expects shape (d, n) where d = subjects, n = timepoints.
         T_case = wide.loc[case_subj].values.astype(float)
-        pan_mp = compute_matrix_profile(T_case, window_size)
 
-        if not np.any(np.isfinite(pan_mp)):
+        # Scan all candidate sizes; pick best by enrichment score.
+        best_score = -np.inf
+        best_ws = None
+        best_window_tps = None
+        best_pan_mp = None
+
+        for ws in sizes:
+            if ws >= n_tp or ws < 3:  # STUMPY requires m >= 3
+                continue
+            pan_mp = compute_matrix_profile(T_case, ws)
+            if not np.any(np.isfinite(pan_mp)):
+                continue
+            motif_idx = int(np.nanargmin(pan_mp))
+            window_tps = timepoints[motif_idx: motif_idx + ws]
+            score = _window_enrichment(wide, case_subj, ctrl_subj, window_tps)
+            if score > best_score:
+                best_score = score
+                best_ws = ws
+                best_window_tps = window_tps
+                best_pan_mp = pan_mp
+
+        if best_ws is None:
             continue
 
-        # Best motif: index of minimum pan-MP value.
-        motif_idx = int(np.nanargmin(pan_mp))
-        motif_start = timepoints[motif_idx]
-        motif_end = timepoints[motif_idx + window_size - 1]
-        window_tps = timepoints[motif_idx: motif_idx + window_size]
-
-        # Enrichment score: mean case value − mean ctrl value in motif window.
-        obs_score = _window_enrichment(wide, case_subj, ctrl_subj, window_tps)
-
-        # Permutation test: shuffle outcome labels, keep window fixed.
+        # Permutation test: run once for the winning (ws, window_tps).
         all_subj = np.array(case_subj + ctrl_subj)
         n_cases = len(case_subj)
         perm_scores = np.empty(n_permutations)
         for i in range(n_permutations):
             perm = rng.permutation(all_subj)
             perm_scores[i] = _window_enrichment(
-                wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), window_tps
+                wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), best_window_tps
             )
 
-        p_value = float(np.mean(perm_scores >= obs_score))
+        p_value = float(np.mean(perm_scores >= best_score))
+        motif_start = best_window_tps[0]
+        motif_end = best_window_tps[-1]
 
         records.append({
             "feature": feature,
+            "window_size": best_ws,
             "motif_window": (motif_start, motif_end),
-            "enrichment_score": round(obs_score, 6),
+            "enrichment_score": round(best_score, 6),
             "p_value": round(p_value, 4),
-            "matrix_profile_min": round(float(np.nanmin(pan_mp)), 6),
+            "matrix_profile_min": round(float(np.nanmin(best_pan_mp)), 6),
         })
 
     if not records:
         return pd.DataFrame(
-            columns=["feature", "motif_window", "enrichment_score", "p_value",
-                     "matrix_profile_min"]
+            columns=["feature", "window_size", "motif_window", "enrichment_score",
+                     "p_value", "matrix_profile_min"]
         )
 
     return (

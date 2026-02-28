@@ -54,7 +54,8 @@ class TestHarbingerSchema:
     def test_expected_columns(self, df_small):
         result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
         assert set(result.columns) == {
-            "feature", "motif_window", "enrichment_score", "p_value", "matrix_profile_min"
+            "feature", "window_size", "motif_window", "enrichment_score",
+            "p_value", "matrix_profile_min"
         }
 
     def test_top_k_respected(self, df_small):
@@ -79,10 +80,10 @@ class TestHarbingerSchema:
             assert w[0] <= w[1]
 
     def test_window_size_equals_window_span(self, df_small):
-        ws = 3
-        result = harbinger(df_small, window_size=ws, top_k=4, n_permutations=50, seed=0)
-        for start, end in result["motif_window"]:
-            assert end - start + 1 == ws
+        result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
+        for _, row in result.iterrows():
+            start, end = row["motif_window"]
+            assert end - start + 1 == row["window_size"]
 
     def test_matrix_profile_min_positive(self, df_small):
         result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
@@ -192,3 +193,92 @@ class TestComputeMatrixProfile:
         ts = list(np.random.default_rng(0).standard_normal(15))
         mp = compute_matrix_profile(ts, window_size=3)
         assert mp.shape == (15 - 3 + 1,)
+
+
+# ---------------------------------------------------------------------------
+# Multi-window scanning
+# ---------------------------------------------------------------------------
+
+class TestMultiWindowScanning:
+
+    @pytest.fixture
+    def df_multi(self):
+        """Small dataset used for multi-window tests."""
+        return simulate.simulate_continuous(
+            n_subjects=10, n_timepoints=8, n_features=4, n_cases=4,
+            motif_features=[0], motif_window=(2, 5),
+            motif_type="step", motif_strength=5.0, noise_sd=0.3,
+            seed=0,
+        )
+
+    @pytest.fixture
+    def df_strong(self):
+        """Strong signal dataset for ranking tests."""
+        return simulate.simulate_continuous(
+            n_subjects=30, n_timepoints=12, n_features=6, n_cases=12,
+            motif_features=[0, 1], motif_window=(3, 6),
+            motif_type="step", motif_strength=8.0, noise_sd=0.3,
+            seed=42,
+        )
+
+    def test_window_sizes_list_accepted(self, df_multi):
+        result = harbinger(df_multi, window_sizes=[3, 5], top_k=4, n_permutations=50, seed=0)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_window_sizes_column_present(self, df_multi):
+        result = harbinger(df_multi, window_sizes=[3, 5], top_k=4, n_permutations=50, seed=0)
+        assert "window_size" in result.columns
+        assert set(result["window_size"].unique()).issubset({3, 5})
+
+    def test_window_size_range_accepted(self, df_multi):
+        result = harbinger(df_multi, window_size_range=(3, 5), top_k=4, n_permutations=50, seed=0)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_window_size_range_column_values(self, df_multi):
+        result = harbinger(df_multi, window_size_range=(3, 5), top_k=4, n_permutations=50, seed=0)
+        assert set(result["window_size"].unique()).issubset({3, 4, 5})
+
+    def test_backward_compat_single_size(self, df_multi):
+        result = harbinger(df_multi, window_size=3, top_k=4, n_permutations=50, seed=0)
+        assert (result["window_size"] == 3).all()
+
+    def test_default_no_param(self, df_multi):
+        result = harbinger(df_multi, top_k=4, n_permutations=50, seed=0)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_multiple_params_raises(self, df_multi):
+        with pytest.raises(ValueError, match="at most one"):
+            harbinger(df_multi, window_size=3, window_sizes=[3, 5], n_permutations=10)
+
+    def test_motif_feature_ranks_top_with_sizes(self, df_strong):
+        result = harbinger(df_strong, window_sizes=[3, 4, 5], top_k=6, n_permutations=200, seed=0)
+        top2 = set(result.head(2)["feature"].tolist())
+        assert "feature_000" in top2
+        assert "feature_001" in top2
+
+    def test_window_tps_match_reported_size(self, df_multi):
+        result = harbinger(df_multi, window_sizes=[3, 5], top_k=4, n_permutations=50, seed=0)
+        for _, row in result.iterrows():
+            start, end = row["motif_window"]
+            assert end - start + 1 == row["window_size"]
+
+    def test_window_size_range_finds_better_than_single(self, df_strong):
+        """Scanning a range that includes the true window should give enrichment
+        >= a single fixed size that misses it. True motif is (3, 6) → size 4.
+        Single size 3 is one shorter; range (3, 5) includes the optimal size 4."""
+        result_single = harbinger(
+            df_strong, window_size=3, top_k=6, n_permutations=50, seed=0
+        )
+        result_range = harbinger(
+            df_strong, window_size_range=(3, 5), top_k=6, n_permutations=50, seed=0
+        )
+        motif_single = result_single[result_single["feature"] == "feature_000"]
+        motif_range = result_range[result_range["feature"] == "feature_000"]
+        if len(motif_single) > 0 and len(motif_range) > 0:
+            assert (
+                motif_range.iloc[0]["enrichment_score"]
+                >= motif_single.iloc[0]["enrichment_score"]
+            )
