@@ -28,8 +28,8 @@ then re-run section-by-section as new modules are implemented.
 | `simulate` | ✅ Implemented | Generate synthetic ground-truth data |
 | `preprocess` | ✅ Implemented | Normalise and reduce trajectories |
 | `harbinger` | ✅ Implemented | Matrix profile motif discovery |
-| `stats` | 🔲 Stub | Permutation tests, enrichment scores, survival |
-| `viz` | 🔲 Stub | Publication-ready plotting API |\
+| `stats` | ✅ Implemented | Permutation tests, enrichment scores, survival |
+| `viz` | ✅ Implemented | Publication-ready plotting API |\
 """),
 
 # ── Imports ───────────────────────────────────────────────────────────────────
@@ -862,47 +862,125 @@ for feat in ['feature_000', 'feature_010']:
 """),
 
 # ═════════════════════════════════════════════════════════════════════════════
-# §8  viz (stub)
+# §8  viz
 # ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 8  `viz` — 🔲 Stub
+## 8  `viz` — ✅ Implemented
 
-### What will go here?
+### Design philosophy
 
-This module provides the official publication-ready plotting API. \
-The ad-hoc matplotlib code scattered through earlier sections will \
-eventually be replaced by these functions.
+The ad-hoc matplotlib code scattered through earlier sections works, but it's \
+verbose, inconsistent, and hard to reuse. The `viz` module wraps those same \
+ideas into two clean, publication-ready functions that handle all the layout \
+and styling decisions automatically.
 
 **`plot_motifs(df, features, motif_window)`** \
-Clean trajectory overlays with case/control colouring and motif window shading. \
-Will handle axis labelling, legends, and figure layout automatically.
+Per-subject trajectory overlays with group mean ± SD bands and motif window \
+shading, laid out automatically into a grid of subplots (up to 4 per row). \
+Handles any number of features without additional code on the caller's side.
 
 **`plot_enrichment(results, top_k)`** \
-Heatmap of enrichment scores from `harbinger()` results — \
-features on Y, windows on X, colour = enrichment, \
-annotated with significance stars where p < 0.05.\
+Two-panel summary of `harbinger()` results. The left panel shows enrichment \
+scores as horizontal bars (red = p < 0.05, grey = not significant), with \
+significance stars (*, **, ***) appended to feature labels. The right panel \
+shows −log₁₀(p-value) bars with a dashed line at the p = 0.05 threshold, \
+so it's visually obvious which features clear the significance hurdle.
+
+Both functions return a `matplotlib.figure.Figure` so you can save them \
+with `fig.savefig("output.pdf")` for inclusion in manuscripts.\
 """),
 
 code("""\
 from tempo.viz import plot_motifs, plot_enrichment
 
-df_v = simulate.simulate_longitudinal(
-    motif_features=[0, 1, 2], motif_window=(4, 8), motif_strength=2.5, seed=42
+# Re-use the continuous simulation for clean signal
+df_v = simulate.simulate_continuous(
+    n_subjects=30, n_timepoints=12, n_features=8, n_cases=12,
+    motif_features=[0, 1], motif_window=(3, 7),
+    motif_strength=5.0, noise_sd=0.4, seed=42,
+)\
+"""),
+
+md("""\
+### `plot_motifs` — trajectory overlays
+
+Each subplot corresponds to one feature. Within each subplot:
+
+- **Thin semi-transparent lines** = individual subject trajectories \
+  (red for cases, blue for controls; alpha reflects group membership \
+  so dense clusters of same-colour lines naturally become more opaque)
+- **Thick line with ribbon** = group mean ± 1 SD band for cases and controls
+- **Gold shaded region** = motif window, with dashed goldenrod boundaries
+
+Motif features should show the case ribbon (red) clearly rising above the \
+control ribbon (blue) within the gold window. Noise features should overlap.
+
+Features are arranged left-to-right, wrapping to a new row after every 4. \
+You can pass a pre-existing `ax` for single-feature embedding into a larger figure.\
+"""),
+
+code("""\
+truth_v = simulate.get_ground_truth(df_v)
+
+fig = plot_motifs(
+    df_v,
+    features=['feature_000', 'feature_001', 'feature_004', 'feature_006'],
+    motif_window=truth_v['motif_window'],
+)
+fig.suptitle(
+    'plot_motifs: motif features (0, 1) vs noise features (4, 6)',
+    fontsize=12, y=1.01
+)
+plt.show()\
+"""),
+
+md("""\
+### `plot_enrichment` — two-panel Harbinger summary
+
+After running `harbinger()`, the results table is the natural input to \
+`plot_enrichment`. The function:
+
+1. Takes the top `top_k` rows (already sorted by enrichment score descending).
+2. **Left panel**: horizontal bars coloured by significance — red if p < 0.05, \
+   grey otherwise. Significance stars (*, **, ***) are appended to feature labels \
+   as a quick visual guide.
+3. **Right panel**: −log₁₀(p-value) bars. The dashed red line at −log₁₀(0.05) ≈ 1.30 \
+   is the significance threshold. Bars clearing this line are significant. \
+   This panel makes it easy to compare relative evidence even among significant features.
+
+You can pass a pre-existing `ax` to suppress the right panel and embed just the \
+enrichment score bars into a custom layout.\
+"""),
+
+code("""\
+from tempo.harbinger import harbinger
+
+# Run harbinger on the continuous simulation
+results_v = harbinger(df_v, window_size=3, top_k=8, n_permutations=199, seed=42)
+print('Harbinger results:')
+print(results_v[['feature', 'motif_window', 'enrichment_score', 'p_value']].to_string(index=False))
+print()\
+"""),
+
+code("""\
+fig = plot_enrichment(results_v, top_k=8)
+fig.suptitle(
+    'plot_enrichment: harbinger results summary\\n'
+    'Red feature labels = ground-truth motif features',
+    fontsize=11, y=1.01
 )
 
-try:
-    fig = plot_motifs(df_v, features=['feature_000', 'feature_001', 'feature_010'],
-                      motif_window=(4, 8))
-    plt.show()
-except NotImplementedError as e:
-    print(f'[not yet] {e}')
+# Annotate left panel y-labels: highlight true motif features in red
+motif_feats = truth_v['motif_features']
+ax0 = fig.axes[0]
+for lbl in ax0.get_yticklabels():
+    feat_name = lbl.get_text().split('  ')[0].strip()  # strip appended stars
+    if feat_name in motif_feats:
+        lbl.set_color('#c0392b')
+        lbl.set_fontweight('bold')
 
-try:
-    fig = plot_enrichment(results, top_k=10)
-    plt.show()
-except NotImplementedError as e:
-    print(f'[not yet] {e}')\
+plt.show()\
 """),
 
 ]  # end nb.cells
