@@ -7,13 +7,13 @@ TEMPO is a Python package for detecting shared trajectory patterns in longitudin
 
 ## Motivation
 
-Longitudinal biological data — microbiome compositions, flow cytometry panels, gene expression profiles — often contains rich temporal structure that predicts outcomes. Standard approaches compare timepoints cross-sectionally and miss the *shape* of a response. TEMPO detects **trajectory motifs**: recurring patterns of change shared within outcome groups and absent in others.
+Longitudinal studies that apply a perturbation — a drug, a vaccine, a transplant, a dietary intervention — generate rich time-series data, but standard analyses compare timepoints in isolation and miss the *shape* of a response. TEMPO detects **trajectory motifs**: recurring patterns of change shared among responders that are absent in non-responders. It works on any feature set that can be measured repeatedly over time: immune cell populations, cytokine profiles, metabolite abundances, gene expression, clinical measurements.
 
 ---
 
 ## Key Features
 
-- **Flexible input**: accepts longitudinal data in long format for any biological feature (taxa, cell populations, gene transcripts)
+- **Flexible input**: accepts longitudinal data in long format for any biological feature (cell populations, proteins, metabolites, gene transcripts)
 - **Compositional-aware preprocessing**: Bray-Curtis trajectory distances, CLR transformation, zero-robust normalization
 - **Harbinger analysis**: matrix profile-based motif discovery via [STUMPY](https://stumpy.readthedocs.io/)
 - **Three statistical testing frameworks**:
@@ -47,9 +47,11 @@ import tempo
 
 # Load the bundled example dataset (40 subjects, 12 timepoints, 15 features)
 # Long format: subject_id, timepoint, feature, value, outcome
+# outcome=1 = responders, outcome=0 = non-responders
 df = tempo.load_example_data()
 
 # Preprocess: CLR-transform compositional values so Euclidean distances are valid
+# Skip this step if your data is not compositional (e.g. raw concentrations)
 df_clr = tempo.clr_transform(df)
 
 # Run Harbinger analysis — scan window sizes 3–6, rank all features
@@ -70,20 +72,20 @@ For a full walkthrough with biological context and interpretation guidance, see 
 
 ## Vignette
 
-`vignette.ipynb` is a self-contained tutorial notebook covering the complete Harbinger workflow on the bundled microbiome dataset:
+`vignette.ipynb` is a self-contained tutorial notebook covering the complete Harbinger workflow on the bundled example perturbation-response dataset:
 
 | Section | What it covers |
 |---------|---------------|
-| §1 Setup | Load data, inspect ground truth metadata |
-| §2 Explore | Raw trajectory plots, group mean ± SD |
-| §3 CLR preprocess | Why CLR is necessary; sanity checks |
-| §4 Harbinger | Matrix profile analysis, multi-window scanning |
-| §5 Plot motifs | `plot_motifs` — case vs control trajectory overlays |
-| §6 Enrichment summary | `plot_enrichment` — scores and p-values |
-| §7 Permutation test | Fixed-window confirmatory testing |
-| §8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
+| 1 Setup | Load data, inspect ground truth metadata |
+| 2 Explore | Raw trajectory plots, group mean ± SD |
+| 3 CLR preprocess | Why CLR is necessary for compositional data; sanity checks |
+| 4 Harbinger | Matrix profile analysis, multi-window scanning |
+| 5 Plot motifs | `plot_motifs` — responder vs non-responder trajectory overlays |
+| 6 Enrichment summary | `plot_enrichment` — scores and p-values |
+| 7 Permutation test | Fixed-window confirmatory testing |
+| 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
 
-Each section includes prose explaining the biological and statistical reasoning, following the [Seurat vignette](https://satijalab.org/seurat/articles/pbmc3k_tutorial) convention. Run it with:
+Each section includes prose explaining the biological and statistical reasoning. Run it with:
 
 ```bash
 jupyter notebook vignette.ipynb
@@ -93,12 +95,12 @@ jupyter notebook vignette.ipynb
 
 ## Data Types Supported
 
-| Data Type | Preprocessing | Zero Handling |
+| Data Type | Preprocessing | Notes |
 |---|---|---|
-| 16S / microbiome | CLR or Bray-Curtis trajectory | Multiplicative replacement or presence/absence track |
-| Flow cytometry | Z-score normalization | N/A |
-| Bulk RNA-seq | Log2 normalization | Pseudocount |
-| Single-cell (pseudobulk) | Log2 normalization | Pseudocount |
+| Compositional (cell fractions, relative abundances) | CLR or Bray-Curtis trajectory | Values sum to 1 at each timepoint |
+| Flow cytometry (raw counts / MFI) | Z-score normalization | Non-compositional; no CLR needed |
+| Bulk RNA-seq / proteomics | Log2 normalization | Pseudocount for zeros |
+| Clinical measurements | None or Z-score | Depends on scale and units |
 
 ---
 
@@ -106,17 +108,16 @@ jupyter notebook vignette.ipynb
 
 | Framework | Use When |
 |---|---|
-| **Permutation enrichment** | Binary or categorical outcomes, general purpose |
+| **Permutation enrichment** | Binary outcomes (responder/non-responder), general purpose |
 | **Harbinger enrichment score** | Continuous or ranked outcomes (analogous to GSEA) |
-| **Survival-integrated** | Time-to-event outcomes (diagnosis date, death, relapse) |
+| **Survival-integrated** | Time-to-event outcomes (diagnosis date, relapse, graft failure) |
 
 ---
 
 ## Validation
 
 TEMPO is validated on:
-1. **Simulated data**: synthetic longitudinal compositional time series with known embedded motifs, used to characterize sensitivity and specificity across noise levels and window sizes
-2. **DIABIMMUNE cohort**: longitudinal infant gut microbiome data (16S) linked to type 1 diabetes development — tests whether Harbinger analysis recovers known early-life microbiome signatures of T1D risk
+1. **Simulated data**: synthetic longitudinal time series with known embedded motifs, used to characterize sensitivity and specificity across noise levels, window sizes, and study designs
 
 ---
 
@@ -134,4 +135,4 @@ MIT
 
 ## Acknowledgments
 
-TEMPO builds on [STUMPY](https://stumpy.readthedocs.io/) for matrix profile computation. The Harbinger analysis framework was developed in the context of transplant immunology and microbiome research at Tulane University.
+TEMPO builds on [STUMPY](https://stumpy.readthedocs.io/) for matrix profile computation. The Harbinger analysis framework was developed at Tulane University.

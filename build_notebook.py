@@ -67,9 +67,12 @@ md("""\
 
 ### What is compositional data?
 
-Microbiome readouts (16S rRNA sequencing) measure the *relative abundance* of taxa — \
-they tell you what fraction of reads belong to each taxon, not the absolute counts. \
+Compositional data arises whenever you measure the *relative breakdown* of a whole — \
+the proportions of each component rather than their absolute values. \
 This means that at every timepoint, the values across all features sum to exactly 1. \
+Common examples include cell type fractions from a flow cytometry panel, \
+relative metabolite peak areas, or any proportional measurement where the \
+total is constrained. \
 This is the **compositional constraint**, and it has major statistical consequences:
 
 - Features are not independent — if one goes up, others must go down.
@@ -88,7 +91,7 @@ are multiplicatively boosted during the `motif_window` timepoints. \
 This mimics a bloom or enrichment event that distinguishes cases from controls.
 4. **Re-normalisation**: after boosting, the composition is renormalised to sum to 1 again.
 5. **Zero inflation**: a fraction of values are zeroed out to mimic the sparsity \
-typical of real 16S data (many taxa are absent in most samples).
+typical of real compositional data (many components are absent in most samples).
 
 The ground truth (which features carry the motif, and when) is stored in `df.attrs` \
 so we can later evaluate how well the Harbinger analysis recovers it.\
@@ -487,7 +490,8 @@ of the whole composition. After CLR:
 - Standard Euclidean distances and linear models are valid
 - CLR values **sum to zero** within each sample (a useful sanity check)
 
-A small `pseudo_count` (default 1e-6) is added before taking the log to handle zeros.\
+A small `pseudo_count` (default 1e-6) is added before taking the log to handle exact zeros, \
+which are common in sparse compositional data.\
 """),
 
 code("""\
@@ -1032,7 +1036,7 @@ understand the API without first understanding the simulation parameters. \
 `tempo.load_example_data()` removes that barrier: one call, no arguments, \
 and you have a fully-formed long-format DataFrame ready to preprocess and analyse.
 
-The bundled dataset is the CSV committed to `tempo/data/example_microbiome.csv`. \
+The bundled dataset is the CSV committed to `tempo/data/example_longitudinal.csv`. \
 It was generated once with `simulate_longitudinal(seed=42)` and is identical \
 across all installs. Ground truth metadata (which features carry the motif, \
 the motif window, study design facts) is restored into `df.attrs` at load time, \
