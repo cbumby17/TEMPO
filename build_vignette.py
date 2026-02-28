@@ -23,7 +23,7 @@ def code(src):
 
 nb.cells = [
 
-# ── §0  Header + preamble ─────────────────────────────────────────────────────
+# ── 0  Header + preamble ─────────────────────────────────────────────────────
 md("""\
 # TEMPO Vignette: Detecting Case-Enriched Trajectory Motifs in Longitudinal Microbiome Data
 
@@ -57,10 +57,10 @@ GitHub: [https://github.com/yourusername/TEMPO](https://github.com/yourusername/
 \
 """),
 
-# ── §1  Setup ──────────────────────────────────────────────────────────────────
+# ── 1  Setup ──────────────────────────────────────────────────────────────────
 md("""\
 ---
-## §1  Setup
+## 1  Setup
 
 We import `tempo` and a few standard libraries, then load the bundled example
 dataset with a single call to `tempo.load_example_data()`. The function returns
@@ -104,10 +104,10 @@ print()
 df.head(6)\
 """),
 
-# ── §2  Exploring the raw data ─────────────────────────────────────────────────
+# ── 2  Exploring the raw data ─────────────────────────────────────────────────
 md("""\
 ---
-## §2  Exploring the Raw Data
+## 2  Exploring the Raw Data
 
 Before running any algorithms it is worth looking at the raw trajectories. This
 serves two purposes: it builds intuition for what a motif actually looks like in
@@ -197,10 +197,10 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── §3  Preprocessing with CLR ────────────────────────────────────────────────
+# ── 3  Preprocessing with CLR ────────────────────────────────────────────────
 md("""\
 ---
-## §3  Preprocessing with CLR Transform
+## 3  Preprocessing with CLR Transform
 
 Before running Harbinger we apply the **Centred Log-Ratio (CLR)** transform.
 This step is important for two reasons that are specific to compositional data.
@@ -268,10 +268,10 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── §4  Harbinger analysis ─────────────────────────────────────────────────────
+# ── 4  Harbinger analysis ─────────────────────────────────────────────────────
 md("""\
 ---
-## §4  Harbinger Analysis
+## 4  Harbinger Analysis
 
 Harbinger analysis is the core of TEMPO. It uses STUMPY's `mstump` function —
 a multidimensional pan-matrix profile — to find the time window where case
@@ -301,7 +301,7 @@ score exceeds the observed score.
 mild selection bias — the winning score is the maximum over several candidates.
 The permutation test accounts for the magnitude of the winning score but not the
 size-selection step itself. Treat p-values from multi-window scanning as
-exploratory; use a fixed, pre-specified window for confirmatory testing (§7).
+exploratory; use a fixed, pre-specified window for confirmatory testing (7).
 \
 """),
 
@@ -314,10 +314,10 @@ print(results[['feature', 'window_size', 'motif_window',
 \
 """),
 
-# ── §5  Visualising the motifs ─────────────────────────────────────────────────
+# ── 5  Visualising the motifs ─────────────────────────────────────────────────
 md("""\
 ---
-## §5  Visualising the Motifs
+## 5  Visualising the Motifs
 
 `tempo.plot_motifs()` provides a standardised view of Harbinger results. For
 each feature you pass, it draws individual subject trajectories (thin
@@ -351,10 +351,10 @@ fig.suptitle('Top 4 features by enrichment score (CLR-transformed)',
 plt.show()\
 """),
 
-# ── §6  Enrichment summary ─────────────────────────────────────────────────────
+# ── 6  Enrichment summary ─────────────────────────────────────────────────────
 md("""\
 ---
-## §6  Enrichment Summary
+## 6  Enrichment Summary
 
 `tempo.plot_enrichment()` gives a two-panel overview of the full Harbinger
 results table.
@@ -382,10 +382,10 @@ fig.suptitle('Harbinger enrichment summary — all 15 features',
 plt.show()\
 """),
 
-# ── §7  Follow-up permutation test ────────────────────────────────────────────
+# ── 7  Follow-up permutation test ────────────────────────────────────────────
 md("""\
 ---
-## §7  Follow-up Statistical Testing with a Fixed Window
+## 7  Follow-up Statistical Testing with a Fixed Window
 
 The permutation test inside Harbinger is run on the data-adaptive window that
 the matrix profile selected — the best window out of all candidates scanned.
@@ -437,10 +437,10 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── §8  Evaluating against ground truth ───────────────────────────────────────
+# ── 8  Evaluating against ground truth ───────────────────────────────────────
 md("""\
 ---
-## §8  Evaluating Against Ground Truth
+## 8  Evaluating Against Ground Truth
 
 In a real study we never know the ground truth — that is precisely why we are
 running the analysis. But because this is a simulated dataset, `df.attrs` records
