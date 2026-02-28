@@ -9,8 +9,6 @@ TEMPO is a Python package for detecting shared trajectory patterns in longitudin
 
 Longitudinal biological data — microbiome compositions, flow cytometry panels, gene expression profiles — often contains rich temporal structure that predicts outcomes. Standard approaches compare timepoints cross-sectionally and miss the *shape* of a response. TEMPO detects **trajectory motifs**: recurring patterns of change shared within outcome groups and absent in others.
 
-The canonical use case: two animals in a cohort develop diabetes within weeks of a high-fructose diet. Their microbiomes looked similar at baseline. The signal was in *how* their communities changed — a pattern invisible to standard methods but recoverable by Harbinger analysis.
-
 ---
 
 ## Key Features

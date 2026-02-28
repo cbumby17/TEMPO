@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tempo-bio"
@@ -35,3 +35,7 @@ dev = ["pytest", "pytest-cov", "jupyter", "black", "ruff"]
 Homepage = "https://github.com/yourusername/TEMPO"
 Documentation = "https://github.com/yourusername/TEMPO"
 Issues = "https://github.com/yourusername/TEMPO/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tempo*"]
