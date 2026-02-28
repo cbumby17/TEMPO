@@ -11,25 +11,36 @@ def code(src):
 
 nb.cells = [
 
-# ── Header ──────────────────────────────────────────────────────────────────
+# ── Header ───────────────────────────────────────────────────────────────────
 md("""\
 # TEMPO Development Notebook
 
 **T**rajectory **E**nrichment via **M**atrix **P**rofile **O**utcomes
 
-This notebook tracks the development of each TEMPO module as it gets implemented. \
-Run any section to see its current state.
+This notebook is a living document that grows alongside the package. \
+Each section corresponds to one TEMPO module and shows it in action — \
+what it computes, why, and what the output looks like. \
+Sections are meant to be read top-to-bottom on a first pass, \
+then re-run section-by-section as new modules are implemented.
 
-| Module | Status |
-|--------|--------|
-| `simulate` | ✅ Implemented |
-| `preprocess` | ✅ Implemented |
-| `harbinger` | ✅ Implemented |
-| `stats` | 🔲 Stub |
-| `viz` | 🔲 Stub |\
+| Module | Status | Purpose |
+|--------|--------|---------|
+| `simulate` | ✅ Implemented | Generate synthetic ground-truth data |
+| `preprocess` | ✅ Implemented | Normalise and reduce trajectories |
+| `harbinger` | ✅ Implemented | Matrix profile motif discovery |
+| `stats` | 🔲 Stub | Permutation tests, enrichment scores, survival |
+| `viz` | 🔲 Stub | Publication-ready plotting API |\
 """),
 
-# ── Imports ──────────────────────────────────────────────────────────────────
+# ── Imports ───────────────────────────────────────────────────────────────────
+md("""\
+---
+## Setup
+
+Standard imports used throughout the notebook. \
+`seaborn` theme is applied globally so all matplotlib figures pick it up automatically.\
+"""),
+
 code("""\
 import numpy as np
 import pandas as pd
@@ -45,14 +56,40 @@ ctrl_color = '#5c8ae0'
 print('tempo imported OK')\
 """),
 
-# ── §1 simulate longitudinal ─────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §1  simulate — longitudinal compositional
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
 ## 1  `simulate` — Longitudinal Compositional Data
 
-Generates 16S-style compositional trajectories. Case subjects have an embedded \
-motif (elevated abundance in `motif_features` during `motif_window`). \
-All rows sum to 1 per subject per timepoint.\
+### What is compositional data?
+
+Microbiome readouts (16S rRNA sequencing) measure the *relative abundance* of taxa — \
+they tell you what fraction of reads belong to each taxon, not the absolute counts. \
+This means that at every timepoint, the values across all features sum to exactly 1. \
+This is the **compositional constraint**, and it has major statistical consequences:
+
+- Features are not independent — if one goes up, others must go down.
+- Standard Euclidean distances are misleading on the simplex.
+- Log-ratio methods (e.g. CLR) are usually required before any linear analysis.
+
+### How `simulate_longitudinal` works
+
+1. **Baseline composition**: each subject gets a Dirichlet-sampled starting composition \
+(sums to 1). The Dirichlet distribution is the natural prior over compositions \
+(it's what you'd use if you wanted a random point on the probability simplex).
+2. **Random walk**: at each subsequent timepoint, compositions drift in log-space \
+via Gaussian noise. Log-space is used so values stay positive.
+3. **Motif embedding**: for *case* subjects, the features listed in `motif_features` \
+are multiplicatively boosted during the `motif_window` timepoints. \
+This mimics a bloom or enrichment event that distinguishes cases from controls.
+4. **Re-normalisation**: after boosting, the composition is renormalised to sum to 1 again.
+5. **Zero inflation**: a fraction of values are zeroed out to mimic the sparsity \
+typical of real 16S data (many taxa are absent in most samples).
+
+The ground truth (which features carry the motif, and when) is stored in `df.attrs` \
+so we can later evaluate how well the Harbinger analysis recovers it.\
 """),
 
 code("""\
@@ -61,11 +98,11 @@ df = simulate.simulate_longitudinal(
     n_timepoints=12,
     n_features=20,
     n_cases=15,
-    motif_features=[0, 1, 2],
-    motif_window=(4, 8),
-    motif_strength=2.5,
-    noise_sd=0.2,
-    zero_inflation=0.1,
+    motif_features=[0, 1, 2],   # features 0, 1, 2 carry the signal
+    motif_window=(4, 8),         # signal is present at timepoints 4 through 8
+    motif_strength=2.5,          # case values are 2.5x higher in the motif window
+    noise_sd=0.2,                # gaussian noise on log-trajectories
+    zero_inflation=0.1,          # 10% of values replaced with 0
     seed=42,
 )
 
@@ -74,25 +111,42 @@ window = truth['motif_window']
 features = sorted(df['feature'].unique())
 timepoints = sorted(df['timepoint'].unique())
 
-print(f'Shape: {df.shape}')
+print(f'Shape: {df.shape}  (subjects × timepoints × features rows)')
 print(f'Subjects: {df.subject_id.nunique()} '
       f'({df[df.outcome==1].subject_id.nunique()} cases, '
       f'{df[df.outcome==0].subject_id.nunique()} controls)')
-print(f'Ground truth motif features: {truth[\"motif_features\"]}')
-print(f'Ground truth motif window:   timepoints {window[0]}–{window[1]}')
+print(f'\\nGround truth:')
+print(f'  Motif features : {truth[\"motif_features\"]}')
+print(f'  Motif window   : timepoints {window[0]}–{window[1]}')
 df.head(6)\
 """),
 
-code("""\
-# Compositional constraint check
-sums = df.groupby(['subject_id', 'timepoint'])['value'].sum()
-print(f'Value sums — min: {sums.min():.6f}, max: {sums.max():.6f}')
-print(f'Zero rate: {(df.value == 0).mean():.1%}')\
+md("""\
+### Verifying the compositional constraint
+
+Before visualising, confirm that the simulation is behaving correctly: \
+values across all features should sum to 1.0 at every (subject, timepoint) combination. \
+The small tolerance (`atol=1e-6`) accounts for floating-point rounding.\
 """),
 
-# ── Plot: individual trajectories ────────────────────────────────────────────
 code("""\
-# Individual trajectories: motif features (top) vs noise features (bottom)
+sums = df.groupby(['subject_id', 'timepoint'])['value'].sum()
+print(f'Value sums — min: {sums.min():.8f}, max: {sums.max():.8f}')
+print(f'Zero rate: {(df.value == 0).mean():.1%}  (target ~10%)')\
+"""),
+
+md("""\
+### Plot 1 — Individual trajectories
+
+Each line is one subject over time. We show three motif features (top row) \
+and three noise features (bottom row). Within the gold-shaded **motif window**, \
+case subjects (red) should visibly separate from controls (blue) in the motif features, \
+but not in the noise features. \
+The signal is subtle here because the compositional renormalisation partially absorbs \
+the boost — this is a key reason why CLR preprocessing is important.\
+"""),
+
+code("""\
 motif_feats = truth['motif_features']
 noise_feats = ['feature_010', 'feature_011', 'feature_012']
 
@@ -129,9 +183,17 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── Plot: mean ± SD ──────────────────────────────────────────────────────────
+md("""\
+### Plot 2 — Group mean ± SD
+
+Averaging across all subjects in each group and showing ±1 SD makes the signal \
+much clearer. Within the motif window, the case mean (red) should rise above the \
+control mean (blue) for motif features, but not for noise features. \
+The SD bands give a sense of how variable the trajectories are — \
+wide bands mean the signal is buried in noise for individual subjects.\
+"""),
+
 code("""\
-# Group mean ± SD for one motif feature vs one noise feature
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
 for ax, feat, title in zip(
@@ -158,13 +220,18 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── Plot: ALL-FEATURES HEATMAP ───────────────────────────────────────────────
-code("""\
-# All-features difference heatmap — see every feature at once.
-# Colour = mean(case) − mean(ctrl) at each (feature, timepoint).
-# Red feature labels = ground-truth motif features.
-# Gold box = motif window.
+md("""\
+### Plot 3 — All-features difference heatmap
 
+This is the most compact summary: every feature on Y, every timepoint on X, \
+colour = mean(case) − mean(ctrl). \
+A well-behaved simulation should show a warm (red) block in the top rows \
+(motif features, labelled in red) aligned with the gold motif window columns. \
+Everything else should be near zero (white). \
+This view scales well to 100+ features without cluttering.\
+"""),
+
+code("""\
 case_mean = (
     df[df['outcome'] == 1]
     .groupby(['feature', 'timepoint'])['value'].mean()
@@ -186,7 +253,6 @@ sns.heatmap(
     cbar_kws={'label': 'Mean(case) − Mean(ctrl)'},
 )
 
-# Gold border around motif window columns
 for tp in range(window[0], window[1] + 1):
     col_idx = timepoints.index(tp)
     ax.add_patch(plt.Rectangle(
@@ -194,7 +260,6 @@ for tp in range(window[0], window[1] + 1):
         fill=False, edgecolor='gold', lw=2.5, zorder=5
     ))
 
-# Red labels for known motif features
 for lbl in ax.get_yticklabels():
     if lbl.get_text() in truth['motif_features']:
         lbl.set_color('#c0392b')
@@ -211,12 +276,30 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── §2 simulate continuous ───────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §2  simulate continuous
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 2  `simulate` — Continuous Data (step / ramp / pulse motifs)
+## 2  `simulate` — Continuous Data (step / ramp / pulse)
 
-Non-compositional data (flow cytometry, gene expression). Three motif shapes.\
+### Why a separate continuous simulator?
+
+Not all biological data is compositional. Flow cytometry cell counts, \
+gene expression (TPM), and clinical measurements don't sum to 1 — \
+each feature is independent and lives on the real line. \
+`simulate_continuous` generates data with these properties and also lets \
+us test three different **motif shapes** that map to different biological phenomena:
+
+- **Step**: a sustained elevation during the window (e.g. immune cell activation \
+  that stays elevated once triggered).
+- **Ramp**: a linear increase (e.g. gradual clonal expansion over the window).
+- **Pulse**: a transient spike at the window midpoint (e.g. an acute inflammatory \
+  burst that resolves quickly).
+
+Because there's no compositional constraint, the signal-to-noise ratio is much \
+cleaner and makes this a good dataset for testing the harbinger algorithm \
+before moving to the harder compositional case.\
 """),
 
 code("""\
@@ -237,50 +320,62 @@ for ax, motif_type in zip(axes, ['step', 'ramp', 'pulse']):
         ax.fill_between(means.index, means - stds, means + stds, color=color, alpha=0.18)
 
     ax.axvspan(4, 8, alpha=0.12, color='gold')
-    ax.axvline(4, color='goldenrod', lw=0.8, ls='--')
-    ax.axvline(8, color='goldenrod', lw=0.8, ls='--')
-    ax.set_title(f'Motif type: \"{motif_type}\"', fontsize=11)
+    ax.set_title(f'Motif type: "{motif_type}"', fontsize=11)
     ax.set_xlabel('Timepoint')
     ax.set_ylabel('Value')
     ax.legend()
 
-fig.suptitle('Continuous data motif shapes (feature_000, cases vs controls)', fontsize=12)
+fig.suptitle('Group mean ± SD for feature_000 under each motif shape', fontsize=12)
 plt.tight_layout()
 plt.show()\
 """),
 
-# ── §3 outcome types ─────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §3  outcome types
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
 ## 3  `simulate` — Outcome Types
 
-The simulator supports binary, continuous, and survival outcomes.\
+TEMPO is designed to work with three different study designs:
+
+- **Binary** (default): case/control — the most common design. \
+  Outcome is 0 or 1 per subject.
+- **Continuous**: a quantitative phenotype (e.g. a clinical score). \
+  Useful for testing enrichment methods that correlate trajectories \
+  with a continuous variable rather than a binary label.
+- **Survival**: time-to-event data with censoring. \
+  Cases get earlier synthetic events; controls are censored later. \
+  This is the design for survival-integrated trajectory analysis via `stats.survival_test()`.\
 """),
 
 code("""\
-df_binary = simulate.simulate_longitudinal(outcome_type='binary', seed=0)
+df_binary    = simulate.simulate_longitudinal(outcome_type='binary', seed=0)
 df_continuous = simulate.simulate_longitudinal(outcome_type='continuous', seed=0)
-df_survival = simulate.simulate_longitudinal(outcome_type='survival', seed=0)
+df_survival  = simulate.simulate_longitudinal(outcome_type='survival', seed=0)
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4))
 
+# Binary: simple case/control counts
 counts = df_binary.drop_duplicates('subject_id')['outcome'].value_counts()
 axes[0].bar(['Control (0)', 'Case (1)'], [counts.get(0, 0), counts.get(1, 0)],
             color=[ctrl_color, case_color], alpha=0.8)
 axes[0].set_title('Binary outcome')
 axes[0].set_ylabel('Subjects')
 
+# Continuous: distribution of outcome scores
 axes[1].hist(df_continuous.drop_duplicates('subject_id')['outcome'],
              bins=20, color='steelblue', alpha=0.75)
 axes[1].set_title('Continuous outcome')
 axes[1].set_xlabel('Score')
 axes[1].set_ylabel('Subjects')
 
+# Survival: time-to-event distributions by group
 subjects_s = df_survival.drop_duplicates('subject_id')
 for outcome, label, color in [(1, 'Cases', case_color), (0, 'Controls', ctrl_color)]:
     grp = subjects_s[subjects_s['outcome'] == outcome]['time_to_event']
     axes[2].hist(grp, bins=10, alpha=0.6, label=label, color=color)
-axes[2].set_title('Survival outcome (time to event)')
+axes[2].set_title('Survival: time to event by group')
 axes[2].set_xlabel('Time to event')
 axes[2].set_ylabel('Subjects')
 axes[2].legend()
@@ -289,12 +384,30 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── §4 evaluation_report ────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §4  evaluation_report
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 4  `simulate` — evaluation_report
+## 4  `simulate` — `evaluation_report`
 
-Compares detected features/window against ground truth (used to score harbinger output).\
+### Why do we need an evaluation framework?
+
+Once Harbinger analysis returns a list of features and a motif window, \
+we need an objective way to ask: *how close did it get to the truth?* \
+Because we simulated the data ourselves, we know the true answer \
+(stored in `df.attrs`), so we can compute three metrics:
+
+- **Feature recall**: what fraction of the true motif features did we detect? \
+  `|detected ∩ true| / |true|`
+- **Feature precision**: of the features we flagged, what fraction were actually motif features? \
+  `|detected ∩ true| / |detected|`
+- **Window Jaccard**: how much do the detected and true windows overlap? \
+  Jaccard index = `|detected ∩ true| / |detected ∪ true|`, \
+  treating each timepoint as a set element. 1.0 = perfect overlap, 0.0 = no overlap.
+
+This is the evaluation loop we'll run after every harbinger result to track \
+how the algorithm improves as we tune it.\
 """),
 
 code("""\
@@ -302,6 +415,7 @@ df_eval = simulate.simulate_longitudinal(
     motif_features=[0, 1, 2], motif_window=(3, 7), seed=0
 )
 
+# Imagine two hypothetical detectors
 perfect = simulate.evaluation_report(
     detected_features=['feature_000', 'feature_001', 'feature_002'],
     detected_window=(3, 7), df=df_eval
@@ -321,19 +435,57 @@ ax.bar(x + 0.2, [partial[m] for m in metrics], 0.35,
 ax.set_xticks(x)
 ax.set_xticklabels(['Feature recall', 'Feature precision', 'Window Jaccard'])
 ax.set_ylim(0, 1.15)
-ax.set_title('evaluation_report: detector quality metrics')
+ax.set_title('Hypothetical detector performance vs ground truth')
 ax.legend()
 plt.tight_layout()
 plt.show()
 
-print('Perfect:', perfect)
-print('Partial:', partial)\
+print('Perfect detector:', perfect)
+print('Partial detector:', partial)\
 """),
 
-# ── §5 preprocess ────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §5  preprocess
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 5  `preprocess` — ✅ Implemented\
+## 5  `preprocess` — ✅ Implemented
+
+### Why preprocess at all?
+
+Raw compositional values have two properties that make them unsuitable for \
+matrix profile analysis:
+
+1. **The simplex constraint**: because values sum to 1, a change in one feature \
+   is automatically reflected in all others (spurious negative correlations). \
+   The matrix profile computes Euclidean distances between subsequences, \
+   which are distorted by this constraint.
+2. **High dimensionality**: the matrix profile operates on a single time series \
+   per subject. We need to reduce the multi-feature composition at each timepoint \
+   into either (a) a transformed feature-level series, or \
+   (b) a single scalar that captures community-level change.
+
+`preprocess` offers three strategies to handle this:
+
+---
+
+### Strategy 1 — CLR transform (`method="clr"`)
+
+The **Centred Log-Ratio** transform maps compositional data from the simplex \
+to real space, where Euclidean geometry is valid.
+
+For a composition **x** = (x₁, …, xₚ) at one sample:
+
+> CLR(xᵢ) = log(xᵢ) − mean(log(x₁), …, log(xₚ))
+
+This is equivalent to expressing each feature relative to the geometric mean \
+of the whole composition. After CLR:
+- Values are no longer bounded to [0, 1]
+- The simplex constraint is broken (values can be negative)
+- Standard Euclidean distances and linear models are valid
+- CLR values **sum to zero** within each sample (a useful sanity check)
+
+A small `pseudo_count` (default 1e-6) is added before taking the log to handle zeros.\
 """),
 
 code("""\
@@ -341,21 +493,61 @@ from tempo.preprocess import preprocess, clr_transform, bray_curtis_trajectory
 
 df_raw = simulate.simulate_longitudinal(seed=42)
 
-# CLR transform
 df_clr = clr_transform(df_raw)
 print('CLR output shape:', df_clr.shape)
-print(f'CLR values sum to zero per sample: '
-      f'{df_clr.groupby([\"subject_id\",\"timepoint\"])[\"value\"].sum().abs().max():.2e}')
 
-# Bray-Curtis trajectory distances
+# Sanity check: CLR values must sum to zero per (subject, timepoint)
+clr_sums = df_clr.groupby(['subject_id', 'timepoint'])['value'].sum()
+print(f'Max absolute CLR sum per sample: {clr_sums.abs().max():.2e}  (should be ~0)')
+print()
+print('Raw values (first sample):')
+print(df_raw[df_raw['subject_id']=='case_000'][df_raw['timepoint']==0][['feature','value']].head(5))
+print()
+print('CLR-transformed values (same sample):')
+print(df_clr[df_clr['subject_id']=='case_000'][df_clr['timepoint']==0][['feature','value']].head(5))\
+"""),
+
+md("""\
+### Strategy 2 — Bray-Curtis trajectory (`method="bray_curtis"`)
+
+Instead of transforming each feature individually, this strategy collapses the \
+entire composition at each timepoint into a single number: \
+**how much did the community change since the last timepoint?**
+
+The **Bray-Curtis dissimilarity** between two compositions **x** and **y** is:
+
+> BC(**x**, **y**) = 1 − 2·Σᵢ min(xᵢ, yᵢ) / (Σᵢ xᵢ + Σᵢ yᵢ)
+
+Range is [0, 1]: 0 = identical community, 1 = completely disjoint community.
+
+The result is a *distance trajectory* per subject — a time series of length \
+`n_timepoints − 1` (one value per consecutive pair of timepoints). \
+A large BC value at timepoint *t* means the community shifted dramatically \
+between *t−1* and *t*. \
+In case subjects, we'd expect elevated BC values during the motif window \
+if the motif represents a community-level transition event.\
+"""),
+
+code("""\
 df_bc = bray_curtis_trajectory(df_raw)
-print(f'\\nBray-Curtis output shape: {df_bc.shape}')
+print(f'Bray-Curtis output shape: {df_bc.shape}')
+print(f'Rows per subject: {df_bc.groupby(\"subject_id\").size().unique().tolist()}  '
+      f'(= n_timepoints − 1 = {df_raw[\"timepoint\"].nunique() - 1})')
 print(f'Distance range: [{df_bc[\"distance\"].min():.4f}, {df_bc[\"distance\"].max():.4f}]')
 df_bc.head()\
 """),
 
+md("""\
+### Visualising the Bray-Curtis trajectories
+
+Each line below is one subject's BC distance over time. \
+Spikes indicate timepoints where the community composition changed dramatically. \
+We'd expect case subjects (red) to show a spike *entering* the motif window \
+(as the motif features bloom) and another spike *exiting* it (as they recede). \
+Controls (blue) should be flatter.\
+"""),
+
 code("""\
-# Visualise Bray-Curtis distance trajectories: cases vs controls
 fig, ax = plt.subplots(figsize=(10, 4))
 truth_raw = simulate.get_ground_truth(df_raw)
 win = truth_raw['motif_window']
@@ -374,21 +566,73 @@ case_patch = mpatches.Patch(color=case_color, label='Cases', alpha=0.7)
 ctrl_patch = mpatches.Patch(color=ctrl_color, label='Controls', alpha=0.7)
 ax.legend(handles=[case_patch, ctrl_patch])
 ax.set_xlabel('Timepoint')
-ax.set_ylabel('Bray-Curtis dissimilarity')
-ax.set_title('Bray-Curtis trajectory distances per subject (gold = motif window)')
+ax.set_ylabel('Bray-Curtis dissimilarity to previous timepoint')
+ax.set_title('Community turnover per subject — spikes = rapid compositional shift')
 plt.tight_layout()
 plt.show()\
 """),
 
-# ── §6 harbinger ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §6  harbinger
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 6  `harbinger` — ✅ Implemented\
+## 6  `harbinger` — ✅ Implemented
+
+### What is a matrix profile?
+
+A **matrix profile** is a compact summary of a time series that answers the question: \
+*for every possible subsequence of length m, what is the distance to its nearest \
+neighbour elsewhere in the series?*
+
+- Low values → that window contains a pattern that appears very similarly somewhere else \
+  (a **motif**).
+- High values → that window is unique, unlike anything else in the series (a **discord**).
+
+TEMPO uses the STUMPY library to compute matrix profiles efficiently via the STAMP algorithm.
+
+### From single time series to pan-matrix profiles
+
+For TEMPO, we don't have one time series — we have *one time series per subject per feature*. \
+The key insight is that we want motifs that are **conserved across case subjects**: \
+a pattern that all 15 cases show at timepoints 4–8, but that controls don't share.
+
+STUMPY's `mstump` function computes a **multidimensional (pan) matrix profile** \
+across a set of time series (one per subject). It finds the window position *w* \
+where all subjects simultaneously have the most similar pattern to each other. \
+The minimum of the pan-matrix profile = the strongest cross-subject motif.
+
+### The enrichment score
+
+Once we've identified the best motif window for case subjects, \
+we measure **enrichment** as:
+
+> enrichment_score = mean(case values in window) − mean(ctrl values in window)
+
+A positive score means cases have higher average values in the motif window. \
+This is simple and interpretable, though it primarily captures mean-level differences \
+rather than shape similarity. Future work will incorporate shape-based scoring.
+
+### Permutation testing
+
+To convert the enrichment score into a p-value, we use a **label-permutation test**:
+
+1. Record the observed enrichment score at the motif window.
+2. Randomly shuffle which subjects are "cases" vs "controls" (preserving within-subject \
+   temporal structure — only the labels move, not the time series).
+3. Recompute the enrichment score at the *same* motif window.
+4. Repeat 1,000 times to build a null distribution.
+5. p-value = fraction of permuted scores ≥ observed score.
+
+A small p-value means the observed case enrichment at this window is unlikely \
+to arise by chance under random labelling.\
 """),
 
 code("""\
 from tempo.harbinger import harbinger
 
+# Using the compositional data from §1 — note that the signal will be weaker
+# than for continuous data due to the simplex constraint.
 df_h = simulate.simulate_longitudinal(
     n_subjects=40, n_cases=15,
     motif_features=[0, 1, 2], motif_window=(4, 8),
@@ -396,51 +640,99 @@ df_h = simulate.simulate_longitudinal(
 )
 
 results = harbinger(df_h, window_size=3, top_k=10)
-print('Harbinger results:')
-print(results)
+print('Harbinger results (sorted by enrichment score):')
+print(results.to_string())
 
 truth_h = simulate.get_ground_truth(df_h)
 top_features = results['feature'].head(3).tolist()
 top_window = results['motif_window'].iloc[0]
 report = simulate.evaluation_report(top_features, top_window, df_h)
-print('\\nEvaluation report:', report)\
+print('\\nEvaluation vs ground truth:')
+for k, v in report.items():
+    print(f'  {k}: {v}')\
+"""),
+
+md("""\
+### Interpreting the results
+
+The table above shows each feature ranked by enrichment score. \
+Key things to look for:
+
+- **True motif features** (`feature_000`, `feature_001`, `feature_002`) should appear \
+  near the top with positive enrichment scores and small p-values.
+- **Noise features** should cluster near zero enrichment with large p-values.
+- **motif_window**: each feature gets its own independently-discovered window \
+  (the argmin of its pan-matrix profile), so they won't necessarily all agree. \
+  The evaluation report uses the top feature's window.
+- **matrix_profile_min**: how strongly the case trajectories agree on a shared pattern. \
+  Lower = more conserved motif.
+
+Note: compositional data (relative abundances, sum to 1) partially suppresses the signal \
+because boosting one feature forces others down during renormalisation. \
+Running harbinger on CLR-preprocessed data or on `simulate_continuous` data \
+gives cleaner separation.\
 """),
 
 code("""\
-# Visualise harbinger results: enrichment scores and p-values
+# Visualise enrichment scores and p-values side by side
 fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
 motif_feats_h = truth_h['motif_features']
 colors_bar = [case_color if f in motif_feats_h else ctrl_color
               for f in results['feature']]
 
-# Enrichment scores
+# Left panel: enrichment scores (horizontal bar)
 axes[0].barh(results['feature'][::-1], results['enrichment_score'][::-1],
              color=colors_bar[::-1], alpha=0.8)
 axes[0].axvline(0, color='black', lw=0.8)
-axes[0].set_xlabel('Enrichment score (mean case − ctrl in motif window)')
-axes[0].set_title('Harbinger enrichment scores')
+axes[0].set_xlabel('Mean(case) − Mean(ctrl) in motif window')
+axes[0].set_title('Enrichment scores by feature')
 
 case_patch = mpatches.Patch(color=case_color, label='True motif feature', alpha=0.8)
-ctrl_patch = mpatches.Patch(color=ctrl_color, label='Non-motif feature', alpha=0.8)
+ctrl_patch = mpatches.Patch(color=ctrl_color, label='Noise feature', alpha=0.8)
 axes[0].legend(handles=[case_patch, ctrl_patch], loc='lower right')
 
-# p-values with significance line
+# Right panel: p-values with significance threshold
 axes[1].barh(results['feature'][::-1], results['p_value'][::-1],
              color=colors_bar[::-1], alpha=0.8)
 axes[1].axvline(0.05, color='red', lw=1.2, ls='--', label='p = 0.05')
 axes[1].set_xlabel('Permutation p-value')
-axes[1].set_title('Harbinger p-values')
+axes[1].set_title('Significance of enrichment')
 axes[1].legend()
 
 plt.tight_layout()
 plt.show()\
 """),
 
-# ── §7 stats ─────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §7  stats (stub)
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 7  `stats` — 🔲 Stub\
+## 7  `stats` — 🔲 Stub
+
+### What will go here?
+
+This module will provide three distinct statistical testing approaches, \
+each suited to a different study design:
+
+**`permutation_test(df, feature, motif_window)`** \
+A dedicated permutation test for a *specific* (feature, window) pair, \
+with more control over the permutation scheme than the one built into `harbinger`. \
+Will support stratified permutation (e.g. preserving batch or sex balance).
+
+**`enrichment_score(df, feature, motif_window, method)`** \
+Standalone enrichment scoring with multiple methods: \
+mean difference (already used in harbinger), GSEA-style running enrichment score, \
+and AUC of the ROC curve separating cases from controls. \
+The GSEA-style score is particularly useful for ranked continuous phenotypes.
+
+**`survival_test(df, feature, motif_window, method)`** \
+Tests whether subjects whose trajectories show the motif have different \
+time-to-event outcomes. \
+Two options: log-rank test (via scipy) for binary motif stratification, \
+or Cox proportional hazards (via lifelines) treating motif enrichment \
+as a continuous covariate.\
 """),
 
 code("""\
@@ -451,12 +743,13 @@ df_s = simulate.simulate_longitudinal(motif_features=[0], motif_window=(4, 8), s
 for feat in ['feature_000', 'feature_010']:
     try:
         perm = permutation_test(df_s, feature=feat, motif_window=(4, 8), n_permutations=999)
-        print(f'{feat}: p = {perm[\"p_value\"]:.4f}')
+        print(f'{feat}: p = {perm[\"p_value\"]:.4f}, score = {perm[\"observed_score\"]:.4f}')
     except NotImplementedError as e:
         print(f'[not yet] {e}')
 
-df_surv = simulate.simulate_longitudinal(outcome_type='survival',
-                                         motif_features=[0], motif_window=(4, 8), seed=42)
+df_surv = simulate.simulate_longitudinal(
+    outcome_type='survival', motif_features=[0], motif_window=(4, 8), seed=42
+)
 try:
     surv = survival_test(df_surv, feature='feature_000', motif_window=(4, 8))
     print(f'Survival test: p = {surv[\"p_value\"]:.4f}')
@@ -464,10 +757,27 @@ except NotImplementedError as e:
     print(f'[not yet] {e}')\
 """),
 
-# ── §8 viz ───────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# §8  viz (stub)
+# ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 8  `viz` — 🔲 Stub\
+## 8  `viz` — 🔲 Stub
+
+### What will go here?
+
+This module provides the official publication-ready plotting API. \
+The ad-hoc matplotlib code scattered through earlier sections will \
+eventually be replaced by these functions.
+
+**`plot_motifs(df, features, motif_window)`** \
+Clean trajectory overlays with case/control colouring and motif window shading. \
+Will handle axis labelling, legends, and figure layout automatically.
+
+**`plot_enrichment(results, top_k)`** \
+Heatmap of enrichment scores from `harbinger()` results — \
+features on Y, windows on X, colour = enrichment, \
+annotated with significance stars where p < 0.05.\
 """),
 
 code("""\
