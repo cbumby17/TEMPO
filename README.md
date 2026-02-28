@@ -1,13 +1,17 @@
 # TEMPO
 ### **T**rajectory **E**nrichment via **M**atrix **P**rofile **O**utcomes
 
-TEMPO is a Python package for detecting shared trajectory patterns in longitudinal biological data and linking them to outcomes. It implements **Harbinger analysis** — a non-parametric, motif-based framework for identifying discriminative temporal signatures in high-dimensional biological time series.
+TEMPO is a Python package for detecting outcome-associated trajectory motifs in longitudinal biological data. It implements **Harbinger analysis** — a non-parametric, matrix profile-based framework for identifying temporal patterns of change that are shared among cases and absent in controls.
 
 ---
 
 ## Motivation
 
-Longitudinal studies that apply a perturbation — a drug, a vaccine, a transplant, a dietary intervention — generate rich time-series data, but standard analyses compare timepoints in isolation and miss the *shape* of a response. TEMPO detects **trajectory motifs**: recurring patterns of change shared among responders that are absent in non-responders. It works on any feature set that can be measured repeatedly over time: immune cell populations, cytokine profiles, metabolite abundances, gene expression, clinical measurements.
+Many longitudinal studies apply the same perturbation to all subjects — a diet, a drug, a vaccine, a transplant, an infection — and measure how biological features evolve over time. At baseline, cases and controls are often indistinguishable. After the perturbation, their trajectories diverge: cases follow a distinctive pattern of change that controls do not, and that pattern is associated with eventually developing the outcome.
+
+Standard approaches compare groups at individual timepoints and miss the *shape* of this divergence — the timing, the rate of change, the window during which cases and controls differ. TEMPO asks: **which features followed a distinctive trajectory in cases, and when did that trajectory diverge from controls?**
+
+It works on any feature set that can be measured repeatedly over time: immune cell populations, cytokine profiles, metabolite abundances, gene expression, clinical measurements, or any high-dimensional longitudinal readout.
 
 ---
 
@@ -47,7 +51,7 @@ import tempo
 
 # Load the bundled example dataset (40 subjects, 12 timepoints, 15 features)
 # Long format: subject_id, timepoint, feature, value, outcome
-# outcome=1 = responders, outcome=0 = non-responders
+# outcome=1 = cases (developed the outcome), outcome=0 = controls
 df = tempo.load_example_data()
 
 # Preprocess: CLR-transform compositional values so Euclidean distances are valid
@@ -106,7 +110,7 @@ or in any notebook viewer without running any code.
 
 | Framework | Use When |
 |---|---|
-| **Permutation enrichment** | Binary outcomes (responder/non-responder), general purpose |
+| **Permutation enrichment** | Binary outcomes (case/control), general purpose |
 | **Harbinger enrichment score** | Continuous or ranked outcomes (analogous to GSEA) |
 | **Survival-integrated** | Time-to-event outcomes (diagnosis date, relapse, graft failure) |
 

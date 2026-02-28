@@ -7,10 +7,10 @@ def load_example_data() -> pd.DataFrame:
     Load the bundled example perturbation-response dataset.
 
     Returns a simulated longitudinal compositional dataset with 40 subjects
-    (15 responders, 25 non-responders) measured over 12 timepoints across
-    15 features. Features 0–2 carry a known trajectory motif in the responder
-    group during timepoints 3–8, representing a coordinated feature response
-    to a perturbation.
+    (15 cases, 25 controls) measured over 12 timepoints across 15 features.
+    All subjects share the same baseline composition. Features 0–2 carry a
+    known trajectory motif in the case group during timepoints 3–8,
+    representing a post-perturbation divergence associated with the outcome.
 
     Ground truth is stored in df.attrs for use with
     simulate.get_ground_truth() and simulate.evaluation_report().
@@ -19,7 +19,8 @@ def load_example_data() -> pd.DataFrame:
     -------
     pd.DataFrame
         Long-format with columns: subject_id, timepoint, feature, value, outcome.
-        outcome=1 indicates responders; outcome=0 indicates non-responders.
+        outcome=1 indicates cases (developed the outcome); outcome=0 indicates
+        controls.
     """
     data_path = Path(__file__).parent / "data" / "example_longitudinal.csv"
     df = pd.read_csv(data_path)

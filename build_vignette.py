@@ -27,7 +27,7 @@ nb.cells = [
 
 # ── 0  Header + preamble ─────────────────────────────────────────────────────
 md("""\
-# TEMPO Vignette: Detecting Trajectory Motifs in Perturbation-Response Studies
+# TEMPO Vignette: Trajectory Motif Detection After a Shared Perturbation
 
 **T**rajectory **E**nrichment via **M**atrix **P**rofile **O**utcomes
 
@@ -36,36 +36,43 @@ md("""\
 ## What is TEMPO?
 
 TEMPO is a Python package for detecting trajectory motifs — recurring temporal
-patterns — that are enriched in one group of subjects relative to another in
+patterns — that are enriched in one outcome group relative to another in
 longitudinal biological data. The core algorithm, **Harbinger analysis**, uses
-the STUMPY matrix profile to find windows of time where one group shares a
-conserved pattern that the other does not. This is analogous to gene-set
-enrichment analysis (GSEA) but operating on time-series trajectories rather
-than ranked gene lists.
+the STUMPY matrix profile to find windows of time where cases share a conserved
+pattern of change that controls do not.
 
-## The core use case: perturbation-response studies
+## The problem TEMPO is designed to solve
 
-TEMPO is designed for studies where subjects receive a perturbation —
-a drug, a vaccine, a transplant, a dietary intervention, an environmental
-exposure — and you want to know which measured features show a trajectory
-that distinguishes responders from non-responders. The question is not just
-"which features differ between groups at a single timepoint?" but "which
-features follow a distinctive *shape* over time in one group that the other
-lacks?"
+Consider a cohort study in which all subjects receive the same perturbation —
+a high-fructose diet, a vaccine, a transplant, an infection. At baseline, there
+are no measurable differences between the groups. After the perturbation, all
+subjects' features change — but they change *differently*, and by the end of the
+study some subjects have developed a disease, experienced graft failure, or
+reached some other endpoint while others have not.
 
-This framing covers a wide range of data types: immune cell population
-dynamics from flow cytometry, cytokine time courses, metabolite profiles,
-clinical lab values, or any high-dimensional longitudinal measurement where
-the relative composition of features is tracked over time.
+Standard analyses compare groups at individual timepoints and ask "is this
+feature different between cases and controls right now?" They miss the
+*shape* of the response: the timing, the rate of change, the pattern of
+return to baseline or sustained elevation. TEMPO asks a different question:
+**which features followed a distinctive temporal trajectory in cases, and when
+did that trajectory diverge from controls?**
+
+A concrete example: in a dietary intervention study, mice receiving a
+high-fructose diet all start with identical gut microbiota composition.
+Over the following weeks, all animals' compositions shift in response to the
+diet. But a subset of animals go on to develop diabetes — and TEMPO can
+identify which features showed a distinctive pattern of change in those
+animals *before* the clinical outcome was apparent, and pinpoint the window
+of time when that divergence occurred.
 
 ## What this vignette covers
 
 We walk through a complete Harbinger analysis on a bundled example dataset:
-40 subjects (15 responders, 25 non-responders) measured over 12 timepoints
-across 15 features. Three features carry a planted trajectory motif in the
-responder group between timepoints 3 and 8, representing a coordinated feature
-response to a perturbation. Our goal is to recover those features and that
-window from the data alone, without knowing the ground truth in advance.
+40 subjects (15 cases, 25 controls) measured over 12 timepoints across 15
+compositional features. All subjects share the same baseline; 15 go on to
+develop the outcome of interest. Three features carry a planted trajectory
+motif in the case group between timepoints 3 and 8. Our goal is to recover
+those features and that window from the data alone.
 
 The workflow is: **load → explore → preprocess (CLR) → Harbinger → visualise →
 statistical follow-up → evaluate against ground truth**.
@@ -88,11 +95,10 @@ a long-format DataFrame — one row per (subject, timepoint, feature) combinatio
 time. In a real dataset `df.attrs` would not carry ground truth, but here it
 lets us verify our results at the end.
 
-The `attrs` dictionary records which features carry the planted motif
-(`motif_features`), the timepoint range of that motif (`motif_window`), and
-basic study design facts. We print these upfront so the target is explicit
-throughout the vignette. The `outcome` column uses 1 for responders and 0 for
-non-responders.
+The `outcome` column uses 1 for cases (subjects who developed the outcome) and
+0 for controls (subjects who did not). Both groups received the same perturbation
+and start from equivalent baselines; what TEMPO is looking for is divergence in
+their feature trajectories after the perturbation.
 \
 """),
 
@@ -110,12 +116,12 @@ sns.set_theme(style='whitegrid', palette='muted')
 # Load the bundled example dataset
 df = tempo.load_example_data()
 
-print(f"Shape          : {df.shape}")
-print(f"Subjects       : {df['subject_id'].nunique()} "
-      f"({df[df['outcome']==1]['subject_id'].nunique()} responders, "
-      f"{df[df['outcome']==0]['subject_id'].nunique()} non-responders)")
-print(f"Timepoints     : {sorted(df['timepoint'].unique())}")
-print(f"Features       : {df['feature'].nunique()}")
+print(f"Shape       : {df.shape}")
+print(f"Subjects    : {df['subject_id'].nunique()} "
+      f"({df[df['outcome']==1]['subject_id'].nunique()} cases, "
+      f"{df[df['outcome']==0]['subject_id'].nunique()} controls)")
+print(f"Timepoints  : {sorted(df['timepoint'].unique())}")
+print(f"Features    : {df['feature'].nunique()}")
 print()
 print("Ground truth (df.attrs):")
 for k, v in df.attrs.items():
@@ -129,33 +135,35 @@ md("""\
 ---
 ## 2  Exploring the Raw Data
 
-Before running any algorithms it is worth looking at the raw trajectories. This
-serves two purposes: it builds intuition for what a motif actually looks like in
-the measurement space, and it reveals how much noise we are working against.
+Before running any algorithms it is worth looking at the raw trajectories. The
+key thing to notice is that cases and controls start from the same baseline —
+there is nothing to distinguish them at timepoint 0. The signal we are looking
+for emerges *after* the perturbation: a subset of features in cases begins to
+diverge from controls and then, in some features, returns toward baseline. This
+is what a trajectory motif looks like: a pattern of change with a defined onset,
+shape, and offset that is shared among cases but absent in controls.
 
 The dataset uses **compositional measurements** — at every (subject, timepoint)
-the 15 feature values sum to 1.0, representing proportions of a whole. This
-format arises naturally whenever you measure the relative breakdown of a system:
-cell type fractions from a flow cytometry panel, relative metabolite abundances,
-or proportional scores across clinical categories. The compositional constraint
-means features are not independent — if one proportion increases, others must
-collectively decrease to compensate, which has important consequences for
-preprocessing (see section 3).
+the 15 feature values sum to 1, representing proportions of a whole. This format
+arises in any setting where you measure the relative breakdown of a system: cell
+type fractions from a flow cytometry panel, relative metabolite abundances, or
+proportional readouts where the total is constrained. The compositional constraint
+creates statistical dependencies between features that must be handled before
+running the matrix profile (see section 3).
 
-We show two views. First, individual trajectories for the three signal-carrying
-features and three noise features, with the known motif window shaded in gold.
-The responder/non-responder separation in raw proportion space is often subtle
-because renormalisation to sum-to-1 partially absorbs any shift. Second, group
-mean ± SD trajectories for one signal and one noise feature — averaging across
-subjects makes the pattern much clearer.
+We show individual trajectories for the three signal-carrying features and three
+noise features, with the known motif window shaded in gold. Case/control
+separation in raw proportion space is often subtle because renormalisation to
+sum-to-1 partially absorbs any shift in individual features. The group mean ± SD
+plot makes the pattern more apparent.
 \
 """),
 
 code("""\
 import matplotlib.patches as mpatches
 
-resp_color = '#e05c5c'
-nonr_color = '#5c8ae0'
+case_color = '#e05c5c'
+ctrl_color = '#5c8ae0'
 
 motif_feats = df.attrs['motif_features']   # ['feature_000', 'feature_001', 'feature_002']
 noise_feats = ['feature_005', 'feature_008', 'feature_012']
@@ -171,7 +179,7 @@ for row_idx, feat_group in enumerate([motif_feats, noise_feats]):
 
         for subj, grp in feat_df.groupby('subject_id'):
             outcome = grp['outcome'].iloc[0]
-            color = resp_color if outcome == 1 else nonr_color
+            color = case_color if outcome == 1 else ctrl_color
             alpha = 0.55 if outcome == 1 else 0.30
             ax.plot(grp['timepoint'], grp['value'], color=color, alpha=alpha, lw=1.1)
 
@@ -184,10 +192,10 @@ for row_idx, feat_group in enumerate([motif_feats, noise_feats]):
         if col_idx == 0:
             ax.set_ylabel('Proportion')
 
-resp_patch = mpatches.Patch(color=resp_color, label='Responders', alpha=0.7)
-nonr_patch = mpatches.Patch(color=nonr_color, label='Non-responders', alpha=0.7)
+case_patch = mpatches.Patch(color=case_color, label='Cases', alpha=0.7)
+ctrl_patch = mpatches.Patch(color=ctrl_color, label='Controls', alpha=0.7)
 window_patch = mpatches.Patch(color='gold', label='Motif window (truth)', alpha=0.4)
-fig.legend(handles=[resp_patch, nonr_patch, window_patch],
+fig.legend(handles=[case_patch, ctrl_patch, window_patch],
            loc='upper right', bbox_to_anchor=(1.01, 0.98))
 fig.suptitle('Individual trajectories: signal features (top) vs noise features (bottom)',
              fontsize=11, y=1.02)
@@ -203,8 +211,7 @@ for ax, feat, title in zip(
     ['feature_000 (signal)', 'feature_007 (noise)'],
 ):
     feat_df = df[df['feature'] == feat]
-    for outcome, label, color in [(1, 'Responders', resp_color),
-                                   (0, 'Non-responders', nonr_color)]:
+    for outcome, label, color in [(1, 'Cases', case_color), (0, 'Controls', ctrl_color)]:
         grp = feat_df[feat_df['outcome'] == outcome].groupby('timepoint')['value']
         means, stds = grp.mean(), grp.std()
         ax.plot(means.index, means.values, color=color, lw=2, label=label)
@@ -233,24 +240,26 @@ i.e., proportions that sum to a constant at each timepoint.
 The core problem is that the simplex constraint creates spurious correlations.
 Because all features sum to 1, an increase in any one feature mathematically
 forces the others down — even if there is no biological relationship between
-them. The Euclidean distances that the matrix profile computes are distorted
-in this constrained space, and any pattern it finds could reflect the geometry
-of the simplex rather than a genuine biological signal. CLR maps the data from
-the simplex to unconstrained real space where Euclidean geometry is valid.
+them. In a perturbation-response study this is particularly problematic: if a
+case-enriched feature rises after the perturbation, its signal is automatically
+diluted across all other features, and the pairwise correlations you observe
+reflect the geometry of the simplex as much as the biology. CLR removes this
+constraint by expressing each feature relative to the geometric mean of the
+full composition at that timepoint, mapping the data to unconstrained real space
+where Euclidean distances are meaningful.
 
 For a composition **x** = (x₁, …, xₚ) at one sample:
 
 > CLR(xᵢ) = log(xᵢ) − mean(log(x₁), …, log(xₚ))
 
-Each feature is expressed relative to the geometric mean of the full composition
-at that timepoint. After CLR, values can be negative, are no longer bounded to
-[0, 1], and sum to zero within each sample — a useful sanity check. A small
-pseudo-count (default 1e-6) is added before the log to handle exact zeros.
+After CLR, values can be negative, are no longer bounded to [0, 1], and sum to
+zero within each sample — a useful sanity check. A small pseudo-count (default
+1e-6) is added before the log to handle exact zeros, which are common in sparse
+compositional data.
 
-If your data is not compositional — for example, raw cytokine concentrations,
-gene expression values, or clinical measurements that are not constrained to
-sum to a constant — CLR is not needed and you can pass your data directly to
-`harbinger()`.
+If your data is not compositional — raw cytokine concentrations, gene expression
+counts, clinical measurements — CLR is not needed and you can pass your data
+directly to `harbinger()`.
 \
 """),
 
@@ -265,7 +274,7 @@ print(f"Max absolute CLR row sum: {clr_sums.abs().max():.2e}  (should be ~0)")
 print(f"CLR value range : [{df_clr['value'].min():.3f}, {df_clr['value'].max():.3f}]")
 print(f"Raw value range : [{df['value'].min():.3f}, {df['value'].max():.3f}]")
 
-# ── Plot CLR trajectories for the same features ───────────────────────────────
+# ── Plot CLR trajectories ─────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
 for ax, feat, title in zip(
@@ -274,8 +283,7 @@ for ax, feat, title in zip(
     ['feature_000 (signal) — CLR', 'feature_007 (noise) — CLR'],
 ):
     feat_df = df_clr[df_clr['feature'] == feat]
-    for outcome, label, color in [(1, 'Responders', resp_color),
-                                   (0, 'Non-responders', nonr_color)]:
+    for outcome, label, color in [(1, 'Cases', case_color), (0, 'Controls', ctrl_color)]:
         grp = feat_df[feat_df['outcome'] == outcome].groupby('timepoint')['value']
         means, stds = grp.mean(), grp.std()
         ax.plot(means.index, means.values, color=color, lw=2, label=label)
@@ -289,7 +297,7 @@ for ax, feat, title in zip(
     ax.set_ylabel('CLR value')
     ax.legend()
 
-fig.suptitle('CLR-transformed trajectories: responder separation is sharper in CLR space',
+fig.suptitle('After CLR: case/control divergence is more apparent, simplex distortion removed',
              fontsize=11)
 plt.tight_layout()
 plt.show()\
@@ -301,34 +309,37 @@ md("""\
 ## 4  Harbinger Analysis
 
 Harbinger analysis is the core of TEMPO. It uses STUMPY's `mstump` function —
-a multidimensional pan-matrix profile — to find the time window where responder
-subjects simultaneously show the most conserved shared pattern.
+a multidimensional pan-matrix profile — to find the time window where case
+subjects simultaneously show the most conserved shared pattern of change.
 
 **How the matrix profile works:** for a given window size *m*, the matrix
 profile records, at each position in the time series, the distance to the
 nearest matching subsequence elsewhere in the series. Low values indicate
-motif positions (repeated patterns); high values indicate discords (unique
-events). `mstump` extends this to a stack of time series — one per responder
-subject — finding the position where all responders agree on a shared pattern,
-i.e., where the cross-subject matrix profile is minimised.
+motif positions (the same pattern appears repeatedly); high values indicate
+discords (unique, unrepeated events). `mstump` extends this to a stack of time
+series — one per case subject — and finds the window position where all cases
+simultaneously agree on a shared pattern. The minimum of this cross-subject
+matrix profile marks the strongest case-shared motif.
+
+**Why this captures post-perturbation divergence:** because cases and controls
+share the same baseline, any motif the matrix profile finds in the case group
+that does not appear in controls represents genuine post-perturbation divergence
+rather than a pre-existing difference. The enrichment score confirms this by
+comparing case and control values at the discovered window.
 
 **Multi-window scanning:** we pass `window_size_range=(3, 6)` to scan all
-window lengths from 3 to 6 timepoints. For each feature, Harbinger picks the
-(size, position) combination with the highest enrichment score — letting the
-data vote on the best window rather than requiring us to pre-specify it. This
-is important in practice because the duration of a perturbation response is
-rarely known in advance.
+window lengths from 3 to 6 timepoints. The duration of a biological response
+is rarely known in advance, and different features may respond on different
+timescales. Scanning a range lets each feature select its own best window.
 
-**Enrichment score:** at the winning window, the enrichment score is
-mean(responder values) − mean(non-responder values). Positive values indicate
-responder enrichment. A permutation test converts this to a p-value by randomly
-shuffling responder/non-responder labels 999 times and measuring how often the
-permuted score exceeds the observed score.
+**Enrichment score and p-value:** at the winning window, the enrichment score
+is mean(case values) − mean(control values). A permutation test converts this
+to a p-value by randomly shuffling case/control labels 999 times, building a
+null distribution of scores expected if outcome assignment were random.
 
-**Caveat on anti-conservatism:** scanning multiple window sizes introduces a
-mild selection bias — the winning score is the maximum over several candidates.
-Treat p-values from multi-window scanning as exploratory; use a fixed,
-pre-specified window for confirmatory testing (section 7).
+**Caveat:** scanning multiple window sizes introduces a mild selection bias.
+Treat these p-values as exploratory; use a fixed, pre-specified window for
+confirmatory testing (section 7).
 \
 """),
 
@@ -346,22 +357,21 @@ md("""\
 ---
 ## 5  Visualising the Motifs
 
-`tempo.plot_motifs()` provides a standardised view of Harbinger results. For
-each feature, it draws individual subject trajectories (thin semi-transparent
-lines) overlaid with group mean ± 1 SD ribbons for responders and
-non-responders, and shades the discovered motif window in gold. This makes it
-immediately apparent whether responders diverge from non-responders inside the
-window and return to baseline outside it.
+`tempo.plot_motifs()` draws individual subject trajectories overlaid with group
+mean ± 1 SD ribbons for cases and controls, with the discovered motif window
+shaded in gold. This is the most direct way to visually confirm that Harbinger
+found a real signal rather than a statistical artefact.
 
-We show the top 4 features ranked by enrichment score. Signal features should
-show the responder ribbon rising clearly above the non-responder ribbon inside
-the gold window. Noise features should show overlapping ribbons throughout,
-confirming that Harbinger's ranking reflects real signal rather than artefact.
+For a genuine trajectory motif, you should see: cases and controls overlapping
+before the window (shared baseline), the case ribbon diverging from controls
+inside the window (the post-perturbation pattern), and potentially a return
+toward baseline after the window. Noise features should show overlapping
+ribbons throughout, with no systematic divergence inside the gold region.
 
-The plot uses CLR-transformed values, so the y-axis reflects log-ratio
-deviations from the geometric mean composition. A positive CLR value means
-the feature is elevated relative to the overall composition at that timepoint;
-negative means suppressed.
+The plot uses CLR-transformed values — positive values mean the feature is
+elevated relative to the geometric mean composition at that timepoint, negative
+means suppressed. The baseline (CLR = 0) corresponds to a feature being exactly
+at its geometric mean proportion.
 \
 """),
 
@@ -369,8 +379,8 @@ code("""\
 top_features = results['feature'].head(4).tolist()
 top_window = results['motif_window'].iloc[0]
 
-print(f"Top 4 features: {top_features}")
-print(f"Motif window for top feature: {top_window}")
+print(f"Top 4 features : {top_features}")
+print(f"Motif window   : {top_window}")
 
 fig = tempo.plot_motifs(df_clr, features=top_features, motif_window=top_window)
 fig.suptitle('Top 4 features by enrichment score (CLR-transformed)',
@@ -396,10 +406,10 @@ The **right panel** shows −log₁₀(p-value). The dashed red line at
 are significant. This panel makes it easy to compare the strength of evidence
 across features, not just which side of the binary threshold they fall on.
 
-Together, the two panels answer both "which features show a response trajectory?"
-and "how strong is the evidence?". Features at the top of both panels — large
-enrichment score *and* low p-value — are the strongest candidates for follow-up
-mechanistic study or validation in an independent cohort.
+Together, the two panels answer both "which features show a case-enriched
+trajectory?" and "how strong is the evidence?". Features at the top of both
+panels are the strongest candidates for follow-up mechanistic study or
+validation in an independent cohort.
 \
 """),
 
@@ -416,22 +426,21 @@ md("""\
 ## 7  Follow-up Statistical Testing with a Fixed Window
 
 The permutation test inside Harbinger is run on the data-adaptive window
-selected by the matrix profile — the best window out of all candidates scanned.
-This is appropriate for discovery, but the p-values carry a selection effect:
-we effectively tested many windows and reported the best one.
+selected by the matrix profile. This is appropriate for discovery, but the
+p-values carry a selection effect — we tested many windows and reported the best.
 
-For confirmatory analysis, best practice is to fix the window in advance —
-based on prior knowledge of the perturbation's expected duration, a pre-registered
-analysis plan, or the discovery result from a held-out dataset — then test only
-that window. `tempo.permutation_test()` provides exactly this: a standalone
-permutation test on a single, pre-specified (feature, window) pair. Because
-there is no window selection involved, the p-value is more conservative and
-more directly interpretable as the probability of observing this level of
-responder enrichment by chance.
+For confirmatory analysis, best practice is to fix the window in advance based
+on prior biological knowledge (e.g. the known duration of an acute immune
+response) or a pre-registered analysis plan, then test only that window.
+`tempo.permutation_test()` provides exactly this: a standalone permutation test
+on a single, pre-specified (feature, window) pair. Because there is no window
+selection involved, the p-value is more conservative and more directly
+interpretable as the probability of observing this level of case enrichment by
+chance under random outcome assignment.
 
 Here we test the top-ranked feature at the window discovered by Harbinger. In
-a rigorous two-stage analysis, the discovery window would come from an
-independent training split.
+a rigorous two-stage analysis, the window would be specified independently of
+the data being tested — for example, from a prior study or a held-out cohort.
 \
 """),
 
@@ -454,7 +463,7 @@ null_sample = rng.normal(perm_result['null_mean'], perm_result['null_sd'], 999)
 fig, ax = plt.subplots(figsize=(8, 4))
 ax.hist(null_sample, bins=40, color='lightgray', edgecolor='white',
         label='Null distribution (label permutation)')
-ax.axvline(perm_result['observed_score'], color=resp_color, lw=2.5,
+ax.axvline(perm_result['observed_score'], color=case_color, lw=2.5,
            label=f"Observed = {perm_result['observed_score']:.3f}  "
                  f"(p = {perm_result['p_value']:.3f})")
 ax.set_xlabel('Enrichment score (mean difference, CLR)')
@@ -470,27 +479,25 @@ md("""\
 ---
 ## 8  Evaluating Against Ground Truth
 
-In a real study we never know which features carry signal or exactly when the
-response window falls — that is what we are trying to discover. But because
-this is a simulated dataset, `df.attrs` records exactly which features carry
-the planted motif and which timepoints it spans. This lets us measure how well
-Harbinger recovered the signal using three metrics:
+In a real study we do not know which features carry signal or exactly when the
+response window falls — that is what we are trying to discover. But because this
+is a simulated dataset, `df.attrs` records the planted ground truth, letting us
+measure how well Harbinger recovered it using three metrics:
 
-**Feature recall** — what fraction of the true signal features did Harbinger
-rank among the significant hits? A recall of 1.0 means all three were detected;
-0.67 means two out of three were found.
+**Feature recall** — what fraction of the true signal features were detected?
+A recall of 1.0 means all three were found; 0.67 means two out of three.
 
-**Feature precision** — of the features Harbinger flagged as significant, what
-fraction were genuinely signal-carrying? High precision means few false positives.
+**Feature precision** — of the features flagged as significant, what fraction
+were genuinely signal-carrying? High precision means few false positives.
 
 **Window Jaccard** — how much do the detected and true windows overlap?
 Jaccard = |detected ∩ true| / |detected ∪ true|, treating each timepoint as a
-set element. A Jaccard of 1.0 means the detected window exactly matches the
-true response window; 0.0 means no overlap.
+set element. 1.0 = exact match; 0.0 = no overlap.
 
-In practice, recall matters more than precision for hypothesis generation (you
-would rather follow up on a few false positives than miss real signal), while
-precision matters more when downstream validation is expensive.
+In practice, recall matters more than precision for hypothesis generation — it
+is better to follow up on a few false positives than to miss real signal.
+Precision matters more when downstream validation is expensive or when the
+results will be used to make a clinical decision.
 \
 """),
 
@@ -499,10 +506,10 @@ code("""\
 sig_features = results[results['p_value'] < 0.05]['feature'].tolist()
 detected_window = results['motif_window'].iloc[0]
 
-print(f"Significant features (p < 0.05): {sig_features}")
-print(f"Detected window (top feature)  : {detected_window}")
-print(f"True signal features           : {df.attrs['motif_features']}")
-print(f"True response window           : {df.attrs['motif_window']}")
+print(f"Significant features (p < 0.05) : {sig_features}")
+print(f"Detected window (top feature)   : {detected_window}")
+print(f"True signal features            : {df.attrs['motif_features']}")
+print(f"True response window            : {df.attrs['motif_window']}")
 print()
 
 report = simulate.evaluation_report(
@@ -531,7 +538,7 @@ ax.axhline(1.0, color='gray', lw=0.8, ls=':')
 for bar, val in zip(bars, values):
     ax.text(bar.get_x() + bar.get_width() / 2, val + 0.03,
             f'{val:.2f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
-ax.set_title('Harbinger recovery of ground truth signal', fontsize=11)
+ax.set_title('Harbinger recovery of planted ground truth signal', fontsize=11)
 ax.set_ylabel('Score (0 = worst, 1 = perfect)')
 plt.tight_layout()
 plt.show()\
