@@ -709,52 +709,156 @@ plt.show()\
 # ═════════════════════════════════════════════════════════════════════════════
 md("""\
 ---
-## 7  `stats` — 🔲 Stub
+## 7  `stats` — ✅ Implemented
 
-### What will go here?
+The stats module provides three complementary ways to quantify and test \
+the enrichment of a trajectory motif in case subjects. \
+Each function operates on a specific (feature, motif_window) pair — \
+you point them at a candidate identified by `harbinger()` and ask: \
+*how strong is this, and how confident are we?*
 
-This module will provide three distinct statistical testing approaches, \
-each suited to a different study design:
+---
 
-**`permutation_test(df, feature, motif_window)`** \
-A dedicated permutation test for a *specific* (feature, window) pair, \
-with more control over the permutation scheme than the one built into `harbinger`. \
-Will support stratified permutation (e.g. preserving batch or sex balance).
+### `enrichment_score` — three methods for measuring case enrichment
 
-**`enrichment_score(df, feature, motif_window, method)`** \
-Standalone enrichment scoring with multiple methods: \
-mean difference (already used in harbinger), GSEA-style running enrichment score, \
-and AUC of the ROC curve separating cases from controls. \
-The GSEA-style score is particularly useful for ranked continuous phenotypes.
+All three methods first reduce each subject to a single number: \
+their **mean feature value over the motif window** (their "window score"). \
+They then measure how well that scalar separates cases from controls.
 
-**`survival_test(df, feature, motif_window, method)`** \
-Tests whether subjects whose trajectories show the motif have different \
-time-to-event outcomes. \
-Two options: log-rank test (via scipy) for binary motif stratification, \
-or Cox proportional hazards (via lifelines) treating motif enrichment \
-as a continuous covariate.\
+**`mean_difference`** (simplest) \
+Mean window score of cases minus mean window score of controls. \
+Positive = cases are elevated in the window. \
+This is the same statistic used inside `harbinger()`.
+
+**`auc`** (threshold-free) \
+Area under the ROC curve, treating each subject's window score as a classifier. \
+0.5 = no separation, 1.0 = perfect. \
+Invariant to monotone transformations of the score — it only cares about \
+the *ranking* of subjects, not the absolute differences. \
+Particularly useful when the scale of values varies across features.
+
+**`gsea`** (GSEA-style, weighted KS) \
+Subjects are ranked by window score, highest first. \
+We then walk down the ranked list: each case hit increments the running \
+sum (weighted by the subject's score), each control decrements it \
+by 1/n_controls. The enrichment score is the maximum of the running sum. \
+This captures whether **top-ranked** subjects are disproportionately cases — \
+even if only a subset of cases strongly express the motif.\
 """),
 
 code("""\
 from tempo.stats import permutation_test, enrichment_score, survival_test
 
-df_s = simulate.simulate_longitudinal(motif_features=[0], motif_window=(4, 8), seed=42)
-
-for feat in ['feature_000', 'feature_010']:
-    try:
-        perm = permutation_test(df_s, feature=feat, motif_window=(4, 8), n_permutations=999)
-        print(f'{feat}: p = {perm[\"p_value\"]:.4f}, score = {perm[\"observed_score\"]:.4f}')
-    except NotImplementedError as e:
-        print(f'[not yet] {e}')
-
-df_surv = simulate.simulate_longitudinal(
-    outcome_type='survival', motif_features=[0], motif_window=(4, 8), seed=42
+# Use continuous data for clean signal
+df_stats = simulate.simulate_continuous(
+    n_subjects=30, n_timepoints=12, n_features=5, n_cases=12,
+    motif_features=[0], motif_window=(3, 7),
+    motif_strength=6.0, noise_sd=0.3, seed=0
 )
-try:
-    surv = survival_test(df_surv, feature='feature_000', motif_window=(4, 8))
-    print(f'Survival test: p = {surv[\"p_value\"]:.4f}')
-except NotImplementedError as e:
-    print(f'[not yet] {e}')\
+
+print('Enrichment scores for motif feature (feature_000) vs noise (feature_004):')
+print(f'  {\"method\":<20} {\"motif\":>8} {\"noise\":>8}')
+for method in ['mean_difference', 'auc', 'gsea']:
+    s = enrichment_score(df_stats, 'feature_000', (3, 7), method=method)
+    n = enrichment_score(df_stats, 'feature_004', (3, 7), method=method)
+    print(f'  {method:<20} {s:>8.4f} {n:>8.4f}')\
+"""),
+
+md("""\
+### `permutation_test` — building a null distribution
+
+Knowing the enrichment score is not enough on its own — we need to know \
+whether that score could plausibly arise by chance. \
+The permutation test answers this by:
+
+1. Recording the **observed** mean_difference score at the (feature, window) pair.
+2. Randomly shuffling which subjects are "cases" vs "controls" \
+   (preserving each subject's full temporal trajectory — only the label moves).
+3. Recomputing the enrichment score under each random labelling.
+4. Repeating 1,000 times to build a **null distribution** of scores expected \
+   under no association.
+5. **p-value** = fraction of null scores ≥ observed score.
+
+A key advantage over the permutation test built into `harbinger()`: \
+this one is run on a **fixed, pre-specified window** rather than on the \
+data-adaptive window chosen by the matrix profile. \
+You can use it to follow up on any (feature, window) candidate — \
+from Harbinger, from domain knowledge, or from a prior analysis.\
+"""),
+
+code("""\
+print('Permutation test results (n_permutations=999):')
+print(f'  {\"feature\":<15} {\"obs_score\":>10} {\"p_value\":>8} {\"null_mean\":>10} {\"null_sd\":>8}')
+for feat in ['feature_000', 'feature_004']:
+    r = permutation_test(df_stats, feat, (3, 7), n_permutations=999, seed=42)
+    print(f'  {feat:<15} {r[\"observed_score\"]:>10.4f} {r[\"p_value\"]:>8.4f} '
+          f'{r[\"null_mean\"]:>10.4f} {r[\"null_sd\"]:>8.4f}')\
+"""),
+
+code("""\
+# Visualise the null distribution for the motif feature
+r_motif = permutation_test(df_stats, 'feature_000', (3, 7), n_permutations=999, seed=42)
+r_noise = permutation_test(df_stats, 'feature_004', (3, 7), n_permutations=999, seed=42)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for ax, r, feat, color in [
+    (axes[0], r_motif, 'feature_000 (MOTIF)', case_color),
+    (axes[1], r_noise, 'feature_004 (noise)', ctrl_color),
+]:
+    # Reconstruct approximate null distribution from mean/sd for illustration
+    rng = np.random.default_rng(42)
+    null_sample = rng.normal(r['null_mean'], r['null_sd'], 999)
+    ax.hist(null_sample, bins=40, color='lightgray', edgecolor='white',
+            label='Null distribution')
+    ax.axvline(r['observed_score'], color=color, lw=2.5,
+               label=f'Observed = {r[\"observed_score\"]:.3f}  (p = {r[\"p_value\"]:.3f})')
+    ax.set_title(feat)
+    ax.set_xlabel('Enrichment score (mean difference)')
+    ax.set_ylabel('Count')
+    ax.legend()
+
+fig.suptitle('Permutation null distributions — observed score vs chance', fontsize=12)
+plt.tight_layout()
+plt.show()\
+"""),
+
+md("""\
+### `survival_test` — does the motif predict time to event?
+
+When the study has a survival endpoint (time-to-event + censoring indicator), \
+we can ask a sharper question: *do subjects whose trajectories show the motif \
+reach the event sooner?*
+
+**Log-rank method** (default): \
+Subjects are split at the median window score into "motif-positive" (≥ median) \
+and "motif-negative" (< median) groups. \
+The log-rank test compares the survival curves of these two groups: \
+it counts observed vs expected events at each unique event time, \
+and tests whether the discrepancy across all times is larger than chance. \
+Implemented via `scipy.stats.logrank` with `CensoredData` objects \
+(no extra dependencies required).
+
+**Cox method** (optional, requires `pip install tempo-bio[survival]`): \
+Rather than stratifying at the median, the window score is used as a \
+continuous covariate in a Cox proportional hazards model. \
+This is more powerful but assumes a log-linear hazard relationship. \
+Returns a hazard ratio and 95% confidence interval.\
+"""),
+
+code("""\
+# Survival test on compositional data with survival outcome
+df_surv = simulate.simulate_longitudinal(
+    n_subjects=40, n_cases=15,
+    motif_features=[0], motif_window=(3, 7),
+    motif_strength=2.5, outcome_type='survival', seed=1
+)
+
+print('Survival test (log-rank) for motif vs noise feature:')
+for feat in ['feature_000', 'feature_010']:
+    r = survival_test(df_surv, feat, (3, 7), method='logrank')
+    print(f'  {feat}: statistic={r[\"statistic\"]:.3f}  p={r[\"p_value\"]:.4f}  '
+          f'motif_pos={r[\"n_motif_positive\"]}  motif_neg={r[\"n_motif_negative\"]}')\
 """),
 
 # ═════════════════════════════════════════════════════════════════════════════
