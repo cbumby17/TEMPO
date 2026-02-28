@@ -45,31 +45,48 @@ pip install -e .
 ```python
 import tempo
 
-# Load longitudinal data in long format
-# Required columns: subject_id, timepoint, feature, value, outcome
+# Load the bundled example dataset (40 subjects, 12 timepoints, 15 features)
+# Long format: subject_id, timepoint, feature, value, outcome
 df = tempo.load_example_data()
 
-# Preprocess: compute trajectories relative to baseline
-trajectories = tempo.preprocess(
-    df,
-    feature="Bifidobacterium",
-    data_type="compositional",       # handles zero-robust normalization
-    baseline_timepoint=0,
-    transform="bray_curtis"
-)
+# Preprocess: CLR-transform compositional values so Euclidean distances are valid
+df_clr = tempo.clr_transform(df)
 
-# Run Harbinger analysis
-result = tempo.harbinger(
-    trajectories,
-    window_sizes=[3, 5, 7],          # scan across window sizes
-    outcome_col="t1d_status",
-    stat_test="permutation",         # or "enrichment" or "survival"
-    n_permutations=1000
-)
+# Run Harbinger analysis — scan window sizes 3–6, rank all features
+results = tempo.harbinger(df_clr, window_size_range=(3, 6), top_k=15, n_permutations=999)
+print(results[['feature', 'motif_window', 'enrichment_score', 'p_value']].head())
 
-# Visualize
-tempo.plot_motifs(result)
-tempo.plot_enrichment(result)
+# Visualize the top motif features
+fig = tempo.plot_motifs(df_clr, features=results['feature'].head(4).tolist(),
+                        motif_window=results['motif_window'].iloc[0])
+
+# Enrichment summary (two-panel: scores + –log10 p-values)
+fig = tempo.plot_enrichment(results)
+```
+
+For a full walkthrough with biological context and interpretation guidance, see the **[vignette notebook](vignette.ipynb)**.
+
+---
+
+## Vignette
+
+`vignette.ipynb` is a self-contained tutorial notebook covering the complete Harbinger workflow on the bundled microbiome dataset:
+
+| Section | What it covers |
+|---------|---------------|
+| §1 Setup | Load data, inspect ground truth metadata |
+| §2 Explore | Raw trajectory plots, group mean ± SD |
+| §3 CLR preprocess | Why CLR is necessary; sanity checks |
+| §4 Harbinger | Matrix profile analysis, multi-window scanning |
+| §5 Plot motifs | `plot_motifs` — case vs control trajectory overlays |
+| §6 Enrichment summary | `plot_enrichment` — scores and p-values |
+| §7 Permutation test | Fixed-window confirmatory testing |
+| §8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
+
+Each section includes prose explaining the biological and statistical reasoning, following the [Seurat vignette](https://satijalab.org/seurat/articles/pbmc3k_tutorial) convention. Run it with:
+
+```bash
+jupyter notebook vignette.ipynb
 ```
 
 ---
