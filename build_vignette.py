@@ -44,11 +44,13 @@ pattern of change that controls do not.
 ## The problem TEMPO is designed to solve
 
 Consider a cohort study in which all subjects receive the same perturbation —
-a high-fructose diet, a vaccine, a transplant, an infection. At baseline, there
-are no measurable differences between the groups. After the perturbation, all
-subjects' features change — but they change *differently*, and by the end of the
-study some subjects have developed a disease, experienced graft failure, or
-reached some other endpoint while others have not.
+a high-fructose diet, a vaccine, a transplant, an infection. When cases and
+controls already differ substantially at baseline, that difference is itself
+the finding — cross-sectional methods are sufficient and trajectory analysis
+adds little. TEMPO is designed for the harder and more interesting problem:
+cases and controls look the same at baseline, but only some go on to develop
+the outcome. The signal is not in who was different to begin with; it is in
+who changed differently after the perturbation, and when.
 
 Standard analyses compare groups at individual timepoints and ask "is this
 feature different between cases and controls right now?" They miss the

@@ -7,7 +7,7 @@ TEMPO is a Python package for detecting outcome-associated trajectory motifs in 
 
 ## Motivation
 
-Many longitudinal studies apply the same perturbation to all subjects — a diet, a drug, a vaccine, a transplant, an infection — and measure how biological features evolve over time. At baseline, cases and controls are often indistinguishable. After the perturbation, their trajectories diverge: cases follow a distinctive pattern of change that controls do not, and that pattern is associated with eventually developing the outcome.
+Many longitudinal studies apply the same perturbation to all subjects — a diet, a drug, a vaccine, a transplant, an infection — and measure how biological features evolve over time. When cases and controls already differ substantially at baseline, that difference is itself the finding and cross-sectional methods are sufficient. TEMPO is designed for the harder and more interesting problem: **cases and controls look the same at baseline, but only some go on to develop the outcome**. The signal is not in who was different to begin with — it is in who changed differently after the perturbation, and when.
 
 Standard approaches compare groups at individual timepoints and miss the *shape* of this divergence — the timing, the rate of change, the window during which cases and controls differ. TEMPO asks: **which features followed a distinctive trajectory in cases, and when did that trajectory diverge from controls?**
 

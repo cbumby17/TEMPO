@@ -1051,7 +1051,7 @@ trajectory in three features that the 25 controls (`outcome=0`) do not. \
 That divergence — its features, its timing, its shape — is what Harbinger \
 is designed to recover.
 
-- **40 subjects**: 15 cases, 25 controls; indistinguishable at baseline
+- **40 subjects**: 15 cases, 25 controls
 - **12 timepoints** per subject
 - **15 features** per timepoint (compositional, sums to 1)
 - **Planted motif**: `feature_000`–`feature_002` diverge in cases between \
