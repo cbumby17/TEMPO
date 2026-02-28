@@ -123,12 +123,6 @@ TEMPO is validated on:
 
 ---
 
-## Citation
-
-> *Coming soon*
-
----
-
 ## License
 
 MIT
