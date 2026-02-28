@@ -43,6 +43,9 @@ Standard imports used throughout the notebook. \
 """),
 
 code("""\
+import os
+os.environ['KMP_WARNINGS'] = 'FALSE'  # suppress OpenMP info messages from STUMPY
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -1129,6 +1132,154 @@ print()
 print('Evaluation vs ground truth:')
 for k, v in report.items():
     print(f'  {k}: {v:.3f}' if isinstance(v, float) else f'  {k}: {v}')\
+"""),
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 10  Diagnostics — window recovery problem
+# ═════════════════════════════════════════════════════════════════════════════
+md("""\
+---
+## 10  Diagnostics — Window Recovery
+
+### The problem
+
+Running the vignette's end-to-end evaluation on the bundled dataset
+(`window_size_range=(3, 6)`, 999 permutations) gives:
+
+| Metric | Value |
+|---|---|
+| Feature recall | 0.667 |
+| Feature precision | 0.667 |
+| **Window Jaccard** | **0.286** |
+
+Feature recall and precision are acceptable. Window Jaccard is not. \
+The true motif window is timepoints 3–8 (6 timepoints wide). \
+The detected window is (2, 4) — 3 timepoints, shifted earlier, with only \
+a 2-timepoint overlap. This section documents the investigation.
+
+### Hypothesis: multi-window scanning is biased toward short windows
+
+The key question is whether the algorithm would recover the correct window \
+if it were forced to use the right size. \
+We test four conditions:
+
+1. **`window_size_range=(3, 6)`** — the vignette default
+2. **`window_size_range=(3, 9)`** — wider range, in case (3, 6) was too restrictive
+3. **`window_size_range=(3, 12)`** — maximum sensible range for a 12-timepoint series
+4. **`window_size=6`** — fixed at the true window width (oracle condition)
+
+If conditions 1–3 all give the same result, expanding the range is not the \
+issue. If condition 4 recovers the true window, the window size is correct \
+but the selection mechanism is not finding it.
+
+### What the results reveal
+
+All three scanning conditions return the same detected window (2, 4), \
+regardless of how wide the scan range is. Adding larger windows to the \
+search does not help — the algorithm selects (2, 4) every time because a \
+3-timepoint window at that position achieves a *higher enrichment score* \
+than the 6-timepoint window at the true position.
+
+The oracle condition (fixed `window_size=6`) recovers the true window \
+perfectly (Jaccard = 1.0, precision = 1.0) — confirming that the 6-timepoint \
+signal is genuinely present. But it only detects 1 significant feature \
+(recall = 0.33), because the per-feature enrichment at size 6 is lower than \
+at size 3 for most features.
+
+### Root cause
+
+Multi-window scanning selects the (size, position) pair with the highest \
+enrichment score. Enrichment is measured as mean(case) − mean(control) \
+over the window. A shorter window that sits exactly at the peak of the \
+motif will score higher than a longer window that spans the full extent \
+including the noisier onset and offset timepoints. This is a \
+**short-window bias**: the enrichment score implicitly penalises longer \
+windows by averaging over more timepoints, including the tails where the \
+signal is weaker.
+
+### Potential directions
+
+- **Normalise by window length**: divide the enrichment score by the \
+  square root of window size, analogous to a t-statistic. This would \
+  remove the intrinsic advantage of short windows.
+- **Penalise fragmentation**: prefer windows that cover a larger proportion \
+  of the case-control divergence, not just its peak.
+- **Two-stage approach**: use the matrix profile minimum to nominate a \
+  position, then expand the window greedily as long as enrichment remains \
+  above a threshold.
+
+This is an open algorithmic issue. The vignette uses `window_size_range=(3, 6)` \
+and documents the resulting metrics honestly. The fixed-window `permutation_test` \
+(vignette §7) is recommended as a confirmatory step whenever a biologically \
+motivated window width is available.\
+"""),
+
+code("""\
+import warnings
+import numpy as np
+import matplotlib.pyplot as plt
+from tempo.harbinger import harbinger
+
+conditions = [
+    ('window_size_range=(3, 6)  [vignette default]', dict(window_size_range=(3, 6))),
+    ('window_size_range=(3, 9)',                      dict(window_size_range=(3, 9))),
+    ('window_size_range=(3, 12)',                     dict(window_size_range=(3, 12))),
+    ('window_size=6  [oracle: true window width]',    dict(window_size=6)),
+]
+
+rows = []
+for label, kwargs in conditions:
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')   # suppress STUMPY large-window warning
+        r = harbinger(df_ex_clr, top_k=15, n_permutations=999, seed=42, **kwargs)
+    sig = r[r['p_value'] < 0.05]['feature'].tolist()
+    w = r['motif_window'].iloc[0]
+    rep = simulate.evaluation_report(sig, w, df_ex)
+    rows.append({
+        'condition': label,
+        'detected_window': w,
+        'recall':    rep['feature_recall'],
+        'precision': rep['feature_precision'],
+        'jaccard':   rep['window_jaccard'],
+    })
+    print(f'{label}')
+    print(f'  detected window : {w}')
+    print(f'  recall={rep[\"feature_recall\"]:.3f}  '
+          f'precision={rep[\"feature_precision\"]:.3f}  '
+          f'jaccard={rep[\"window_jaccard\"]:.3f}')
+    print()\
+"""),
+
+code("""\
+# ── Bar chart comparison ──────────────────────────────────────────────────────
+metrics = ['recall', 'precision', 'jaccard']
+x = np.arange(len(metrics))
+width = 0.18
+colors = ['#5c8ae0', '#7ab8f5', '#a8d8f0', '#e05c5c']
+
+fig, ax = plt.subplots(figsize=(10, 4))
+for i, row in enumerate(rows):
+    vals = [row[m] for m in metrics]
+    bars = ax.bar(x + i * width, vals, width, label=row['condition'],
+                  color=colors[i], alpha=0.85)
+
+ax.set_xticks(x + width * 1.5)
+ax.set_xticklabels(['Feature Recall', 'Feature Precision', 'Window Jaccard'])
+ax.set_ylim(0, 1.25)
+ax.axhline(1.0, color='gray', lw=0.7, ls=':')
+ax.set_title(
+    'Window recovery across scanning conditions\\n'
+    'True window: (3, 8)  |  Red = oracle (fixed window_size=6)',
+    fontsize=11
+)
+ax.legend(fontsize=7.5, loc='upper right')
+plt.tight_layout()
+plt.show()
+
+print('Observation: all scanning conditions return the same detected window (2, 4).')
+print('Expanding the range does not help — short windows score higher on enrichment.')
+print('The oracle condition (fixed size=6) recovers the window perfectly')
+print('but detects fewer significant features (lower recall).')\
 """),
 
 ]  # end nb.cells
