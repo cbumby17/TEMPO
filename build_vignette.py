@@ -105,6 +105,9 @@ their feature trajectories after the perturbation.
 """),
 
 code("""\
+import os
+os.environ['KMP_WARNINGS'] = 'FALSE'  # suppress OpenMP info messages from STUMPY
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
