@@ -7,7 +7,7 @@ Publication-ready visualisation functions for TEMPO analysis results.
                        and motif window shading; one subplot per feature.
 
     plot_enrichment  — two-panel summary of harbinger() results: enrichment scores
-                       (with significance stars) and −log₁₀(p) bars.
+                       (with significance stars) and -log10(p) bars.
 """
 
 import numpy as np
@@ -159,7 +159,7 @@ def plot_enrichment(
     significance (red = p < 0.05, grey = not significant), with
     significance stars appended to feature labels.
 
-    Right panel — −log₁₀(p-value) bars with a dashed line at the
+    Right panel — -log10(p-value) bars with a dashed line at the
     p = 0.05 threshold, making it easy to see which features clear
     the significance hurdle.
 
@@ -176,7 +176,7 @@ def plot_enrichment(
         score bars by score magnitude. Default "RdBu_r".
     ax : matplotlib.axes.Axes, optional
         If provided, only the enrichment-score panel is drawn into this
-        axes (single-panel mode). The −log₁₀ panel is omitted.
+        axes (single-panel mode). The -log10 panel is omitted.
     figsize : tuple
         (width, height) in inches. Applies only when ax is None.
 
@@ -228,10 +228,10 @@ def plot_enrichment(
         ax1.barh(y_pos, plot_df["neg_log_p"],
                  color=plot_df["bar_color"], alpha=0.85, height=0.65)
         ax1.axvline(sig_threshold, color="red", lw=1.2, ls="--",
-                    label=f"p = 0.05  (−log₁₀ = {sig_threshold:.2f})")
+                    label=f"p = 0.05  ($-\\log_{{10}}$ = {sig_threshold:.2f})")
         ax1.set_yticks(y_pos)
         ax1.set_yticklabels([])
-        ax1.set_xlabel("−log₁₀(p-value)")
+        ax1.set_xlabel("$-\\log_{10}$(p-value)")
         ax1.set_title("Statistical significance")
         ax1.legend(fontsize=8)
 
