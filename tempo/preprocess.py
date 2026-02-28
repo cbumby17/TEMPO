@@ -37,33 +37,44 @@ def preprocess(
         "clr"         → centered log-ratio transform (for compositional data)
         "none"        → no transformation; use raw values
     clr : bool
-        If True, apply CLR transform before computing distances (compositional data).
-        Ignored when method="clr".
+        If True, apply CLR transform before computing Bray-Curtis distances.
+        Only relevant when method="bray_curtis". Ignored for other methods.
     pseudo_count : float
         Small value added before log transforms to avoid log(0).
 
     Returns
     -------
     pd.DataFrame
-        Preprocessed long-format dataframe, same schema as input but with
-        transformed values. Additional column `distance` may be present
-        for trajectory-distance methods.
+        Preprocessed long-format dataframe.
+        - method="none": same schema as input, values unchanged
+        - method="clr": same schema as input, values are CLR-transformed
+        - method="bray_curtis": columns subject_id, timepoint, distance, outcome;
+          one row per subject per timepoint transition (n_timepoints - 1 rows per subject)
 
     Raises
     ------
-    NotImplementedError
-        This function is not yet implemented.
+    ValueError
+        If method is not one of "bray_curtis", "clr", "none".
 
     Examples
     --------
-    >>> from tempo import simulate, preprocess
+    >>> from tempo import simulate
+    >>> from tempo.preprocess import preprocess
     >>> df = simulate.simulate_longitudinal(seed=0)
     >>> processed = preprocess(df, method="bray_curtis")
+    >>> processed.head()
     """
-    raise NotImplementedError(
-        "preprocess() is not yet implemented. "
-        "Planned methods: 'bray_curtis', 'clr', 'none'."
-    )
+    if method == "none":
+        return df.copy()
+    elif method == "clr":
+        return clr_transform(df, pseudo_count=pseudo_count)
+    elif method == "bray_curtis":
+        working = clr_transform(df, pseudo_count=pseudo_count) if clr else df
+        return bray_curtis_trajectory(working)
+    else:
+        raise ValueError(
+            f"Unknown method '{method}'. Choose from: 'bray_curtis', 'clr', 'none'."
+        )
 
 
 def clr_transform(
@@ -89,19 +100,26 @@ def clr_transform(
     Returns
     -------
     pd.DataFrame
-        Same structure as input with CLR-transformed values.
-
-    Raises
-    ------
-    NotImplementedError
-        This function is not yet implemented.
+        Same structure as input with CLR-transformed values. Preserves all
+        non-value columns (subject_id, timepoint, feature, outcome, etc.)
+        and df.attrs metadata.
 
     Notes
     -----
     CLR(x_i) = log(x_i / geometric_mean(x)) for each feature i in a sample.
+    Equivalently: log(x_i + pseudo_count) - mean(log(x + pseudo_count)).
     After CLR, the data lies in real space and standard Euclidean methods apply.
     """
-    raise NotImplementedError("clr_transform() is not yet implemented.")
+    result = df.copy()
+    log_vals = np.log(result["value"].values + pseudo_count)
+    group_means = (
+        pd.Series(log_vals, index=result.index)
+        .groupby([result["subject_id"], result["timepoint"]])
+        .transform("mean")
+    )
+    result["value"] = log_vals - group_means.values
+    result.attrs = df.attrs.copy()
+    return result
 
 
 def bray_curtis_trajectory(
@@ -119,6 +137,7 @@ def bray_curtis_trajectory(
     ----------
     df : pd.DataFrame
         Long-format dataframe with columns: subject_id, timepoint, feature, value.
+        An outcome column is preserved in the output if present.
     subjects : list of str, optional
         Subset of subject IDs to process. If None, processes all subjects.
 
@@ -126,13 +145,9 @@ def bray_curtis_trajectory(
     -------
     pd.DataFrame
         Long-format dataframe with columns: subject_id, timepoint, distance, outcome.
-        The `distance` column contains Bray-Curtis dissimilarity between
-        timepoint t and timepoint t-1.
-
-    Raises
-    ------
-    NotImplementedError
-        This function is not yet implemented.
+        timepoint refers to the later of the two adjacent timepoints (t), so the
+        first timepoint per subject is absent (there is no t-1 for t=0).
+        Preserves df.attrs metadata.
 
     Notes
     -----
@@ -140,4 +155,32 @@ def bray_curtis_trajectory(
         BC(x, y) = 1 - 2 * sum(min(x_i, y_i)) / (sum(x) + sum(y))
     Range [0, 1]: 0 = identical, 1 = completely dissimilar.
     """
-    raise NotImplementedError("bray_curtis_trajectory() is not yet implemented.")
+    if subjects is not None:
+        df = df[df["subject_id"].isin(subjects)]
+
+    has_outcome = "outcome" in df.columns
+    records = []
+
+    for subj, subj_df in df.groupby("subject_id"):
+        outcome = subj_df["outcome"].iloc[0] if has_outcome else None
+
+        wide = (
+            subj_df.pivot(index="timepoint", columns="feature", values="value")
+            .sort_index()
+        )
+        timepoints = wide.index.tolist()
+
+        for i in range(1, len(timepoints)):
+            x = wide.iloc[i - 1].values
+            y = wide.iloc[i].values
+            denom = x.sum() + y.sum()
+            bc = 0.0 if denom == 0 else 1.0 - 2.0 * np.minimum(x, y).sum() / denom
+
+            record = {"subject_id": subj, "timepoint": timepoints[i], "distance": bc}
+            if has_outcome:
+                record["outcome"] = outcome
+            records.append(record)
+
+    result = pd.DataFrame(records)
+    result.attrs = df.attrs.copy()
+    return result
