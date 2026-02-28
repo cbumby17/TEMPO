@@ -39,3 +39,6 @@ Issues = "https://github.com/yourusername/TEMPO/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tempo*"]
+
+[tool.setuptools.package-data]
+tempo = ["data/*.csv"]
