@@ -1044,11 +1044,18 @@ so downstream evaluation functions work exactly as they do on freshly simulated 
 
 ### What's in the dataset
 
-- **40 subjects**: 15 cases, 25 controls
+The dataset represents a perturbation-response study: all 40 subjects share the \
+same baseline composition at timepoint 0 and receive the same perturbation. \
+After the perturbation, 15 subjects (cases, `outcome=1`) show a distinctive \
+trajectory in three features that the 25 controls (`outcome=0`) do not. \
+That divergence — its features, its timing, its shape — is what Harbinger \
+is designed to recover.
+
+- **40 subjects**: 15 cases, 25 controls; indistinguishable at baseline
 - **12 timepoints** per subject
 - **15 features** per timepoint (compositional, sums to 1)
-- **Planted motif**: `feature_000`, `feature_001`, `feature_002` are elevated \
-  in cases between timepoints 3–8 with `motif_strength=2.5`
+- **Planted motif**: `feature_000`–`feature_002` diverge in cases between \
+  timepoints 3–8 (`motif_strength=2.5`), then return toward baseline
 - **Noise**: 10% zero inflation, Gaussian log-space noise (`noise_sd=0.2`)\
 """),
 
