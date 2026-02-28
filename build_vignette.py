@@ -1,12 +1,14 @@
 """Build vignette.ipynb — source of truth for the user-facing TEMPO vignette.
 
-Run this script to regenerate vignette.ipynb:
+Run this script to regenerate and re-execute vignette.ipynb:
     python build_vignette.py
+    jupyter nbconvert --to notebook --execute vignette.ipynb \
+        --output vignette.ipynb --ExecutePreprocessor.timeout=300
 
-The notebook is written as a clean (unexecuted) notebook. Users run it
-themselves. Each code section is preceded by a markdown cell with rich prose
-explaining the biological and statistical reasoning — following the Seurat
-vignette convention.
+The notebook is committed with all outputs pre-rendered so visualizations
+are visible without running any code. Each code section is preceded by a
+markdown cell with rich prose explaining the biological and statistical
+reasoning — following the Seurat vignette convention.
 """
 import nbformat
 

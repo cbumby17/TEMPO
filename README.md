@@ -85,11 +85,9 @@ For a full walkthrough with biological context and interpretation guidance, see 
 | 7 Permutation test | Fixed-window confirmatory testing |
 | 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
 
-Each section includes prose explaining the biological and statistical reasoning. Run it with:
-
-```bash
-jupyter notebook vignette.ipynb
-```
+Each section includes prose explaining the biological and statistical reasoning.
+The notebook is pre-executed — visualizations are visible directly on GitHub
+or in any notebook viewer without running any code.
 
 ---
 
