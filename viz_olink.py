@@ -55,9 +55,19 @@ for ax in [a for a in fig1.axes if a.get_visible()]:
     ax.set_xlabel('')
     ax.axhline(0, color='gray', lw=0.6, ls=':', zorder=0, alpha=0.6)
 
+# Override generic legend with study-specific labels
+case_color = '#e07b30'
+ctrl_color = '#5c8ae0'
+fig1.legends[0].remove()
+fig1.legend(handles=[
+    mpatches.Patch(color=case_color, alpha=0.75, label='Fermented food'),
+    mpatches.Patch(color=ctrl_color, alpha=0.75, label='High fiber'),
+    mpatches.Patch(color='gold',     alpha=0.5,  label='Motif window'),
+], loc='upper right', bbox_to_anchor=(1.01, 1.0), framealpha=0.9)
+
 fig1.suptitle(
     'TEMPO top hits — Wastyk et al. 2021\n'
-    'Fermented-food arm (orange) vs Fiber arm (blue) | Olink plasma proteomics',
+    'Fermented food (orange) vs High fiber (blue) | Olink plasma proteomics',
     fontsize=10, y=1.02,
 )
 fig1.savefig('olink_motifs.png', dpi=150, bbox_inches='tight')
@@ -74,7 +84,7 @@ fig2.savefig('olink_enrichment.png', dpi=150, bbox_inches='tight')
 print("Saved olink_enrichment.png")
 
 # ── Fig 3: mean ± SD ribbon for top 6 hits (baseline-normalised) ─────────────
-case_color = '#e05c5c'
+case_color = '#e07b30'
 ctrl_color = '#5c8ae0'
 tps = sorted(long['timepoint'].unique())
 first_tp = tps[0]

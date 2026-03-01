@@ -22,7 +22,7 @@ import seaborn as sns
 from typing import Optional
 
 # Consistent colour palette used across both functions
-_CASE_COLOR = "#e05c5c"
+_CASE_COLOR = "#e07b30"
 _CTRL_COLOR = "#5c8ae0"
 _WINDOW_COLOR = "gold"
 _SIG_COLOR = "#c0392b"
