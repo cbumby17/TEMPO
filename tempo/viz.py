@@ -34,6 +34,7 @@ def plot_motifs(
     features: Optional[list] = None,
     motif_window: Optional[tuple] = None,
     highlight_cases: bool = True,
+    baseline_normalize: bool = False,
     ax=None,
     figsize: tuple = (10, 4),
 ) -> plt.Figure:
@@ -58,6 +59,11 @@ def plot_motifs(
         If True, draw cases in red and controls in blue. If False, all
         trajectories are drawn in a neutral grey (useful when there is no
         binary outcome column).
+    baseline_normalize : bool
+        If True, subtract each subject's value at the earliest timepoint before
+        plotting. This converts the y-axis to change-from-baseline (Δvalue),
+        which reduces between-subject baseline variance and makes group-level
+        temporal trends more visible. Default False.
     ax : matplotlib.axes.Axes, optional
         Pre-existing axes to draw into. Only used when exactly one feature is
         requested; ignored for multi-feature layouts.
@@ -93,10 +99,19 @@ def plot_motifs(
         axes_flat = axes_flat[:n_feats]
 
     timepoints = sorted(df["timepoint"].unique())
+    first_tp = timepoints[0]
 
     # ── One subplot per feature ──────────────────────────────────────────────
     for ax_, feat in zip(axes_flat, features):
-        feat_df = df[df["feature"] == feat]
+        feat_df = df[df["feature"] == feat].copy()
+
+        # Baseline-normalize: subtract each subject's value at the first timepoint
+        if baseline_normalize:
+            baselines = (
+                feat_df[feat_df["timepoint"] == first_tp]
+                .set_index("subject_id")["value"]
+            )
+            feat_df["value"] = feat_df["value"] - feat_df["subject_id"].map(baselines)
 
         # Individual subject lines
         for _, grp in feat_df.groupby("subject_id"):
@@ -128,7 +143,7 @@ def plot_motifs(
 
         ax_.set_title(feat, fontsize=10)
         ax_.set_xlabel("Timepoint")
-        ax_.set_ylabel("Value")
+        ax_.set_ylabel("Δ Value (from baseline)" if baseline_normalize else "Value")
         ax_.set_xticks(timepoints)
 
     # ── Shared legend ────────────────────────────────────────────────────────

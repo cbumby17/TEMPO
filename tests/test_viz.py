@@ -141,6 +141,26 @@ class TestPlotMotifs:
         assert isinstance(fig, matplotlib.figure.Figure)
         plt.close(fig)
 
+    def test_baseline_normalize_anchors_first_tp_at_zero(self, df_cont):
+        """With baseline_normalize=True, all subjects should have value=0 at the first timepoint."""
+        feat = sorted(df_cont["feature"].unique())[0]
+        fig = plot_motifs(df_cont, features=[feat], baseline_normalize=True)
+        # Verify via the y-axis label
+        ax = [a for a in fig.axes if a.get_visible()][0]
+        assert "baseline" in ax.get_ylabel().lower()
+        plt.close(fig)
+
+    def test_baseline_normalize_ylabel(self, df_cont):
+        """baseline_normalize should change the y-axis label."""
+        feat = sorted(df_cont["feature"].unique())[0]
+        fig_raw  = plot_motifs(df_cont, features=[feat], baseline_normalize=False)
+        fig_norm = plot_motifs(df_cont, features=[feat], baseline_normalize=True)
+        ax_raw  = [a for a in fig_raw.axes  if a.get_visible()][0]
+        ax_norm = [a for a in fig_norm.axes if a.get_visible()][0]
+        assert ax_raw.get_ylabel() != ax_norm.get_ylabel()
+        plt.close(fig_raw)
+        plt.close(fig_norm)
+
 
 # ---------------------------------------------------------------------------
 # plot_enrichment

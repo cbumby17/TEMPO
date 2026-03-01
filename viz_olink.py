@@ -42,16 +42,17 @@ top_window = results['motif_window'].iloc[0]   # (1, 4)
 print("Top features:", top_feats)
 print("Motif window:", top_window)
 
-# ── Fig 1: plot_motifs ────────────────────────────────────────────────────────
+# ── Fig 1: plot_motifs (baseline-normalised) ──────────────────────────────────
 fig1 = tempo.plot_motifs(long, features=top_feats, motif_window=top_window,
-                         figsize=(11, 4))
+                         baseline_normalize=True, figsize=(11, 4))
 # Relabel x-ticks with week names on all visible axes
 for ax in [a for a in fig1.axes if a.get_visible()]:
     ax.set_xticks(sorted(long['timepoint'].unique()))
     ax.set_xticklabels([tp_labels[t] for t in sorted(long['timepoint'].unique())],
                        fontsize=7)
-    ax.set_ylabel('NPX (plasma protein level)')
+    ax.set_ylabel('ΔNPX from baseline')
     ax.set_xlabel('')
+    ax.axhline(0, color='gray', lw=0.6, ls=':', zorder=0, alpha=0.6)
 
 fig1.suptitle(
     'TEMPO top hits — Wastyk et al. 2021\n'
@@ -71,16 +72,28 @@ fig2.suptitle(
 fig2.savefig('olink_enrichment.png', dpi=150, bbox_inches='tight')
 print("Saved olink_enrichment.png")
 
-# ── Fig 3: mean ± SD ribbon for top 6 hits ───────────────────────────────────
+# ── Fig 3: mean ± SD ribbon for top 6 hits (baseline-normalised) ─────────────
 case_color = '#e05c5c'
 ctrl_color = '#5c8ae0'
 tps = sorted(long['timepoint'].unique())
+first_tp = tps[0]
+
+# Baseline-normalize: subtract each subject×feature value at the first timepoint
+baselines = (
+    long[long['timepoint'] == first_tp]
+    .set_index(['subject_id', 'feature'])['value']
+)
+long_norm = long.copy()
+long_norm['value'] = (
+    long_norm['value']
+    - long_norm.set_index(['subject_id', 'feature']).index.map(baselines)
+)
 
 fig3, axes = plt.subplots(2, 3, figsize=(13, 7), sharey=False)
 axes_flat = axes.flatten()
 
 for ax, feat in zip(axes_flat, top_feats):
-    feat_df = long[long['feature'] == feat]
+    feat_df = long_norm[long_norm['feature'] == feat]
     row = results[results['feature'] == feat].iloc[0]
     win = row['motif_window']
     p   = row['p_value']
@@ -101,6 +114,8 @@ for ax, feat in zip(axes_flat, top_feats):
         ax.fill_between(means.index, means - stds, means + stds,
                         color=color, alpha=0.18, zorder=3)
 
+    # Zero reference line
+    ax.axhline(0, color='gray', lw=0.6, ls=':', zorder=0, alpha=0.6)
     # Window shading
     ax.axvspan(win[0], win[1], alpha=0.12, color='gold', zorder=1)
     ax.axvline(win[0], color='goldenrod', lw=1.0, ls='--', zorder=1)
@@ -111,7 +126,7 @@ for ax, feat in zip(axes_flat, top_feats):
     ax.set_title(f'{feat}\np={p:.3f}  q={q:.3f}', fontsize=9)
     ax.set_xticks(tps)
     ax.set_xticklabels([tp_labels[t] for t in tps], fontsize=7)
-    ax.set_ylabel('NPX', fontsize=8)
+    ax.set_ylabel('ΔNPX from baseline', fontsize=8)
 
 # Shared legend
 case_p = mpatches.Patch(color=case_color, alpha=0.8, label='Fermented food')
