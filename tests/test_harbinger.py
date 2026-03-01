@@ -45,6 +45,37 @@ def df_small():
 # harbinger — output schema
 # ---------------------------------------------------------------------------
 
+class TestHarbingerMissingTimepoints:
+    """harbinger() must handle subjects with sporadic missing timepoints."""
+
+    def test_missing_timepoint_does_not_crash(self):
+        """Drop one row from one subject → harbinger should still produce results."""
+        df = simulate.simulate_continuous(
+            n_subjects=10, n_timepoints=8, n_features=3, n_cases=4,
+            motif_features=[0], motif_window=(2, 5),
+            motif_strength=5.0, noise_sd=0.3, seed=1,
+        )
+        # Remove timepoint 3 for a single subject
+        mask = ~((df["subject_id"] == df["subject_id"].unique()[0]) & (df["timepoint"] == 3))
+        df_missing = df[mask].copy()
+        result = harbinger(df_missing, window_size=3, top_k=3, n_permutations=20, seed=0)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_missing_timepoint_result_similar_to_complete(self):
+        """Top feature should still be recovered even with one missing observation."""
+        df = simulate.simulate_continuous(
+            n_subjects=20, n_timepoints=10, n_features=4, n_cases=8,
+            motif_features=[0], motif_window=(3, 7),
+            motif_strength=6.0, noise_sd=0.3, seed=2,
+        )
+        # Remove one timepoint from one control subject
+        mask = ~((df["subject_id"] == df["subject_id"].unique()[-1]) & (df["timepoint"] == 5))
+        df_missing = df[mask].copy()
+        result = harbinger(df_missing, window_size=3, top_k=4, n_permutations=50, seed=0)
+        assert "feature_000" in result["feature"].values
+
+
 class TestHarbingerSchema:
 
     def test_returns_dataframe(self, df_small):

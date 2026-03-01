@@ -106,6 +106,9 @@ def harbinger(
         Long-format dataframe with columns:
         subject_id, timepoint, feature, value, outcome.
         Typically the output of simulate_longitudinal() or preprocess().
+        Subjects with sporadic missing timepoints are handled via
+        within-subject linear interpolation before matrix profile
+        computation (boundary NaNs are filled by nearest known value).
     window_size : int, optional
         Single subsequence length. Raises ValueError if >= n_timepoints.
         Mutually exclusive with window_sizes and window_size_range.
@@ -179,6 +182,18 @@ def harbinger(
         )
         timepoints = wide.columns.tolist()  # actual timepoint values, sorted
         n_tp = len(timepoints)
+
+        # Impute sporadic missing timepoints via within-subject linear
+        # interpolation. bfill/ffill catch NaNs at the series boundaries.
+        # STUMPY returns all-inf for any series containing NaN, so this
+        # step is required when subjects have irregular sampling.
+        if wide.isna().any().any():
+            wide = (
+                wide
+                .interpolate(axis=1, method="linear")
+                .bfill(axis=1)
+                .ffill(axis=1)
+            )
 
         outcome_map = feat_df.groupby("subject_id")[outcome_col].first()
         case_subj = outcome_map[outcome_map == 1].index.tolist()
