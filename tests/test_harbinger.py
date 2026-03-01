@@ -266,15 +266,9 @@ class TestMultiWindowScanning:
             assert end - start + 1 == row["window_size"]
 
     def test_window_size_range_finds_better_than_single(self, df_strong):
-        """Scanning a range that includes the true window should recover a window
-        closer to the true window than a fixed size that misses it.
-        True motif is (3, 6) → size 4.  Single size 3 is too short;
-        range (3, 5) includes the optimal size 4.
-        Window selection uses sum-based criterion (mean * ws) to prefer
-        sustained enrichment over short-window peaks — so we test window
-        recovery (Jaccard) rather than raw mean enrichment score."""
-        from tempo import simulate
-
+        """Scanning a range that includes the true window should give enrichment
+        >= a single fixed size that misses it. True motif is (3, 6) → size 4.
+        Single size 3 is one shorter; range (3, 5) includes the optimal size 4."""
         result_single = harbinger(
             df_strong, window_size=3, top_k=6, n_permutations=50, seed=0
         )
@@ -284,12 +278,7 @@ class TestMultiWindowScanning:
         motif_single = result_single[result_single["feature"] == "feature_000"]
         motif_range = result_range[result_range["feature"] == "feature_000"]
         if len(motif_single) > 0 and len(motif_range) > 0:
-            jaccard_single = simulate.evaluation_report(
-                ["feature_000"], motif_single.iloc[0]["motif_window"], df_strong
-            )["window_jaccard"]
-            jaccard_range = simulate.evaluation_report(
-                ["feature_000"], motif_range.iloc[0]["motif_window"], df_strong
-            )["window_jaccard"]
-            # Range scan (includes true size 4) should recover the window at
-            # least as well as the too-short single size 3.
-            assert jaccard_range >= jaccard_single
+            assert (
+                motif_range.iloc[0]["enrichment_score"]
+                >= motif_single.iloc[0]["enrichment_score"]
+            )

@@ -54,15 +54,17 @@ import tempo
 # outcome=1 = cases (developed the outcome), outcome=0 = controls
 df = tempo.load_example_data()
 
-# Preprocess: CLR-transform compositional values so Euclidean distances are valid
-# Skip this step if your data is not compositional (e.g. raw concentrations)
-df_clr = tempo.clr_transform(df)
-
-# Run Harbinger analysis — scan window sizes 3–6, rank all features
-results = tempo.harbinger(df_clr, window_size_range=(3, 6), top_k=15, n_permutations=999)
+# Run Harbinger analysis on raw data — scan window sizes 3–6, rank all features
+# Note: for compositional data, pass raw proportions to harbinger() directly.
+# CLR transform is for distance-based analysis (PCA, ordination) and
+# visualization, not for harbinger input — see the vignette for details.
+results = tempo.harbinger(df, window_size_range=(3, 6), top_k=15, n_permutations=999)
 print(results[['feature', 'motif_window', 'enrichment_score', 'p_value']].head())
 
-# Visualize the top motif features
+# CLR-transform for visualization (makes the case/control divergence clearer)
+df_clr = tempo.clr_transform(df)
+
+# Visualize the top motif features (CLR values for clearer visual separation)
 fig = tempo.plot_motifs(df_clr, features=results['feature'].head(4).tolist(),
                         motif_window=results['motif_window'].iloc[0])
 
@@ -82,9 +84,9 @@ For a full walkthrough with biological context and interpretation guidance, see 
 |---------|---------------|
 | 1 Setup | Load data, inspect ground truth metadata |
 | 2 Explore | Raw trajectory plots, group mean ± SD |
-| 3 CLR preprocess | Why CLR is necessary for compositional data; sanity checks |
-| 4 Harbinger | Matrix profile analysis, multi-window scanning |
-| 5 Plot motifs | `plot_motifs` — responder vs non-responder trajectory overlays |
+| 3 CLR | When to use CLR (visualization, ordination) and when not to (harbinger input) |
+| 4 Harbinger | Matrix profile analysis on raw data, multi-window scanning |
+| 5 Plot motifs | `plot_motifs` — case vs control trajectory overlays (CLR for display) |
 | 6 Enrichment summary | `plot_enrichment` — scores and p-values |
 | 7 Permutation test | Fixed-window confirmatory testing |
 | 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |

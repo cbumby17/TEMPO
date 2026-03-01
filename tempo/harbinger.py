@@ -187,13 +187,8 @@ def harbinger(
 
         T_case = wide.loc[case_subj].values.astype(float)
 
-        # Scan all candidate sizes; pick the winner by a sum-based criterion
-        # (mean_enrichment * window_size) so that sustained enrichment over
-        # a longer window beats a sharp peak in a very short window.
-        # best_score retains the *mean* enrichment for reporting and the
-        # permutation test (keeping the public API unchanged).
-        best_selection = -np.inf   # sum-based, internal selection only
-        best_score = None          # mean-based, for output + permutation test
+        # Scan all candidate sizes; pick best by enrichment score.
+        best_score = -np.inf
         best_ws = None
         best_window_tps = None
         best_pan_mp = None
@@ -207,9 +202,7 @@ def harbinger(
             motif_idx = int(np.nanargmin(pan_mp))
             window_tps = timepoints[motif_idx: motif_idx + ws]
             score = _window_enrichment(wide, case_subj, ctrl_subj, window_tps)
-            selection = score * ws   # rewards sustained enrichment
-            if selection > best_selection:
-                best_selection = selection
+            if score > best_score:
                 best_score = score
                 best_ws = ws
                 best_window_tps = window_tps

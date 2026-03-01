@@ -76,8 +76,10 @@ develop the outcome of interest. Three features carry a planted trajectory
 motif in the case group between timepoints 3 and 8. Our goal is to recover
 those features and that window from the data alone.
 
-The workflow is: **load → explore → preprocess (CLR) → Harbinger → visualise →
-statistical follow-up → evaluate against ground truth**.
+The workflow is: **load → explore → Harbinger (raw data) → visualise →
+statistical follow-up → evaluate against ground truth**. CLR transformation is
+applied separately for visualization, where it makes the case/control divergence
+more apparent, but Harbinger itself runs on the raw proportions (see section 3).
 
 ## Source code and documentation
 
@@ -233,38 +235,43 @@ plt.tight_layout()
 plt.show()\
 """),
 
-# ── 3  Preprocessing with CLR ────────────────────────────────────────────────
+# ── 3  CLR: when to use it (and when not to) ─────────────────────────────────
 md("""\
 ---
-## 3  Preprocessing with CLR Transform
+## 3  CLR Transform — Visualisation, Not Harbinger Input
 
-Before running Harbinger we apply the **Centred Log-Ratio (CLR)** transform.
-This step is necessary whenever your measurements are compositional —
-i.e., proportions that sum to a constant at each timepoint.
-
-The core problem is that the simplex constraint creates spurious correlations.
-Because all features sum to 1, an increase in any one feature mathematically
-forces the others down — even if there is no biological relationship between
-them. In a perturbation-response study this is particularly problematic: if a
-case-enriched feature rises after the perturbation, its signal is automatically
-diluted across all other features, and the pairwise correlations you observe
-reflect the geometry of the simplex as much as the biology. CLR removes this
-constraint by expressing each feature relative to the geometric mean of the
-full composition at that timepoint, mapping the data to unconstrained real space
-where Euclidean distances are meaningful.
-
-For a composition **x** = (x₁, …, xₚ) at one sample:
+The **Centred Log-Ratio (CLR)** transform is the standard preprocessing step
+for compositional data. Because all features sum to 1 at each timepoint, an
+increase in any one feature forces the others down by the same amount. Raw
+proportions therefore carry spurious negative correlations that reflect the
+geometry of the simplex, not biology. CLR maps the data to unconstrained real
+space where Euclidean distances are meaningful:
 
 > CLR(xᵢ) = log(xᵢ) − mean(log(x₁), …, log(xₚ))
 
-After CLR, values can be negative, are no longer bounded to [0, 1], and sum to
-zero within each sample — a useful sanity check. A small pseudo-count (default
-1e-6) is added before the log to handle exact zeros, which are common in sparse
-compositional data.
+CLR is the right choice for **distance-based analyses** — PCA, Bray-Curtis
+ordination, clustering — and it makes individual trajectory plots more visually
+interpretable (the baseline becomes 0, and positive values signal relative
+elevation).
 
-If your data is not compositional — raw cytokine concentrations, gene expression
-counts, clinical measurements — CLR is not needed and you can pass your data
-directly to `harbinger()`.
+**However, CLR should not be applied before `harbinger()`.** The log-ratio
+transformation couples all features through a shared denominator (the geometric
+mean). When one feature is genuinely elevated in cases at the motif timepoints,
+the CLR denominator shifts for cases and controls differently, creating large
+apparent case-control differences at timepoints where no real signal exists.
+These artifacts contaminate the enrichment score — the metric harbinger uses to
+rank windows — and cause the algorithm to select the wrong window. Running
+harbinger on raw proportions avoids this entirely.
+
+**In practice:**
+- Run `harbinger()` on **raw proportions** (or raw counts / concentrations for
+  non-compositional data).
+- Apply CLR for **plotting** and for any distance-based analysis you want to
+  do in parallel.
+- For non-compositional data (cytokine concentrations, expression values,
+  clinical measurements) no transformation is needed before `harbinger()`.
+
+The code below applies CLR for visualization purposes only.
 \
 """),
 
@@ -278,6 +285,9 @@ clr_sums = df_clr.groupby(['subject_id', 'timepoint'])['value'].sum()
 print(f"Max absolute CLR row sum: {clr_sums.abs().max():.2e}  (should be ~0)")
 print(f"CLR value range : [{df_clr['value'].min():.3f}, {df_clr['value'].max():.3f}]")
 print(f"Raw value range : [{df['value'].min():.3f}, {df['value'].max():.3f}]")
+print()
+print("CLR is computed here for visualization (sections 5-6).")
+print("Harbinger (section 4) runs on raw proportions — see note above.")
 
 # ── Plot CLR trajectories ─────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -302,7 +312,7 @@ for ax, feat, title in zip(
     ax.set_ylabel('CLR value')
     ax.legend()
 
-fig.suptitle('After CLR: case/control divergence is more apparent, simplex distortion removed',
+fig.suptitle('CLR trajectories (for visualization only — Harbinger uses raw proportions)',
              fontsize=11)
 plt.tight_layout()
 plt.show()\
@@ -337,6 +347,10 @@ window lengths from 3 to 6 timepoints. The duration of a biological response
 is rarely known in advance, and different features may respond on different
 timescales. Scanning a range lets each feature select its own best window.
 
+**Input data:** Harbinger runs on the **raw proportions** (`df`), not the CLR
+values. This is important for compositional data — see section 3 for the
+explanation. For non-compositional data, pass your data as-is.
+
 **Enrichment score and p-value:** at the winning window, the enrichment score
 is mean(case values) − mean(control values). A permutation test converts this
 to a p-value by randomly shuffling case/control labels 999 times, building a
@@ -349,7 +363,8 @@ confirmatory testing (section 7).
 """),
 
 code("""\
-results = tempo.harbinger(df_clr, window_size_range=(3, 6), top_k=15, n_permutations=999, seed=42)
+# Run harbinger on raw proportions (NOT CLR — see section 3)
+results = tempo.harbinger(df, window_size_range=(3, 6), top_k=15, n_permutations=999, seed=42)
 
 print("Harbinger results (top 15 features, sorted by enrichment score):")
 print(results[['feature', 'window_size', 'motif_window',
@@ -454,8 +469,9 @@ top_feature = results['feature'].iloc[0]
 discovered_window = results['motif_window'].iloc[0]
 
 print(f"Confirmatory permutation test for {top_feature} at window {discovered_window}:")
+# Use same data as harbinger (raw proportions)
 perm_result = tempo.permutation_test(
-    df_clr, top_feature, discovered_window, n_permutations=999, seed=42
+    df, top_feature, discovered_window, n_permutations=999, seed=42
 )
 for k, v in perm_result.items():
     print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
@@ -471,7 +487,7 @@ ax.hist(null_sample, bins=40, color='lightgray', edgecolor='white',
 ax.axvline(perm_result['observed_score'], color=case_color, lw=2.5,
            label=f"Observed = {perm_result['observed_score']:.3f}  "
                  f"(p = {perm_result['p_value']:.3f})")
-ax.set_xlabel('Enrichment score (mean difference, CLR)')
+ax.set_xlabel('Enrichment score (mean difference, raw proportion)')
 ax.set_ylabel('Count')
 ax.set_title(f'Permutation null distribution — {top_feature} at window {discovered_window}')
 ax.legend()
