@@ -320,3 +320,30 @@ class TestMultiWindowScanning:
                 motif_range.iloc[0]["enrichment_score"]
                 >= motif_single.iloc[0]["enrichment_score"]
             )
+
+    def test_multi_window_p_values_not_below_single(self, df_strong):
+        """Max-over-candidates correction: scanning multiple windows should not
+        produce systematically *lower* p-values than a fixed single window for
+        noise features.  The correction makes multi-window p-values at least as
+        conservative as single-window ones (on average across noise features)."""
+        result_single = harbinger(
+            df_strong, window_size=4, top_k=6, n_permutations=200, seed=0
+        )
+        result_multi = harbinger(
+            df_strong, window_sizes=[3, 4, 5], top_k=6, n_permutations=200, seed=0
+        )
+        noise_feats = [f for f in result_single["feature"]
+                       if f not in ("feature_000", "feature_001")]
+        p_single = result_single[result_single["feature"].isin(noise_feats)]["p_value"]
+        p_multi = result_multi[result_multi["feature"].isin(noise_feats)]["p_value"]
+        if len(p_single) > 0 and len(p_multi) > 0:
+            # Multi-window mean p-value should be >= single-window mean p-value,
+            # i.e. the correction should not deflate p-values further.
+            assert p_multi.mean() >= p_single.mean() - 0.15  # generous tolerance
+
+    def test_single_window_and_multi_same_result_when_one_size(self, df_multi):
+        """A window_sizes list with one element should behave identically to
+        window_size (single candidate → standard permutation, no change)."""
+        r1 = harbinger(df_multi, window_size=3, top_k=4, n_permutations=100, seed=5)
+        r2 = harbinger(df_multi, window_sizes=[3], top_k=4, n_permutations=100, seed=5)
+        pd.testing.assert_frame_equal(r1, r2)

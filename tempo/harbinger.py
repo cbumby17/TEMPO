@@ -18,12 +18,11 @@ Core algorithm (per feature):
     4. Permute outcome labels once (for the winning window) to derive p-values.
     5. Return results ranked by enrichment score.
 
-Note on multiple window sizes: scanning multiple sizes and picking the best
-enrichment score is slightly anti-conservative (selection bias inflates the
-observed score relative to the null). The permutation test accounts for the
-observed score's magnitude but not the size-selection step itself. Results
-should be interpreted with this in mind, especially when the range of
-candidate sizes is large.
+Note on multiple window sizes: when multiple sizes are scanned, each
+permutation takes the max enrichment across all candidate (size, window)
+pairs, mirroring the real-data selection step. This "max-over-candidates"
+approach corrects the anti-conservative bias that arises from picking the
+best window size by looking at the data.
 """
 
 import numpy as np
@@ -97,8 +96,9 @@ def harbinger(
     - ``window_size_range=(3, 8)`` — try every integer from 3 to 8 inclusive.
 
     When multiple sizes are given, each feature independently selects the size
-    that maximises its enrichment score. The permutation test runs once per
-    feature on the winning (size, window) pair.
+    that maximises its enrichment score. To correct for the selection bias
+    this introduces, each permutation takes the max enrichment across every
+    valid candidate window, mirroring the real-data selection step.
 
     Parameters
     ----------
@@ -190,10 +190,14 @@ def harbinger(
         T_case = wide.loc[case_subj].values.astype(float)
 
         # Scan all candidate sizes; pick best by enrichment score.
+        # Also collect every valid (ws, window_tps) pair for the permutation
+        # test — needed to correct for the selection bias introduced when
+        # multiple window sizes are tried (issue #4).
         best_score = -np.inf
         best_ws = None
         best_window_tps = None
         best_pan_mp = None
+        candidate_windows = []  # list of (ws, window_tps) for valid candidates
 
         for ws in sizes:
             if ws >= n_tp or ws < 3:  # STUMPY requires m >= 3
@@ -204,6 +208,7 @@ def harbinger(
             motif_idx = int(np.nanargmin(pan_mp))
             window_tps = timepoints[motif_idx: motif_idx + ws]
             score = _window_enrichment(wide, case_subj, ctrl_subj, window_tps)
+            candidate_windows.append((ws, window_tps))
             if score > best_score:
                 best_score = score
                 best_ws = ws
@@ -213,15 +218,30 @@ def harbinger(
         if best_ws is None:
             continue
 
-        # Permutation test: run once for the winning (ws, window_tps).
+        # Permutation test.
+        # Single candidate → standard fixed-window test (no selection bias).
+        # Multiple candidates → "max-over-candidates" test: each permutation
+        # computes enrichment at every candidate window and takes the max.
+        # This mirrors the real data selection step and corrects the upward
+        # bias in p-values that results from picking the best window.
         all_subj = np.array(case_subj + ctrl_subj)
         n_cases = len(case_subj)
         perm_scores = np.empty(n_permutations)
-        for i in range(n_permutations):
-            perm = rng.permutation(all_subj)
-            perm_scores[i] = _window_enrichment(
-                wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), best_window_tps
-            )
+        if len(candidate_windows) == 1:
+            for i in range(n_permutations):
+                perm = rng.permutation(all_subj)
+                perm_scores[i] = _window_enrichment(
+                    wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), best_window_tps
+                )
+        else:
+            for i in range(n_permutations):
+                perm = rng.permutation(all_subj)
+                perm_case = perm[:n_cases].tolist()
+                perm_ctrl = perm[n_cases:].tolist()
+                perm_scores[i] = max(
+                    _window_enrichment(wide, perm_case, perm_ctrl, win_tps)
+                    for _, win_tps in candidate_windows
+                )
 
         p_value = float(np.mean(perm_scores >= best_score))
         motif_start = best_window_tps[0]
