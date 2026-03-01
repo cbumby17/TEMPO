@@ -32,7 +32,7 @@ _NS_COLOR = "#aaaaaa"
 def plot_motifs(
     df: pd.DataFrame,
     features: Optional[list] = None,
-    motif_window: Optional[tuple] = None,
+    motif_window=None,
     highlight_cases: bool = True,
     baseline_normalize: bool = False,
     show_individuals: bool = True,
@@ -55,8 +55,12 @@ def plot_motifs(
         value. An outcome column (0/1) is required for case/control colouring.
     features : list of str, optional
         Features to plot. Defaults to the first 4 features (alphabetical).
-    motif_window : tuple of (int, int), optional
-        (start, end) timepoint range to highlight. No shading if None.
+    motif_window : tuple of (int, int) or dict, optional
+        Window to highlight. Can be:
+        - A single ``(start, end)`` tuple applied to every feature subplot.
+        - A dict mapping feature name → ``(start, end)`` tuple, so each
+          subplot shows its own window (as returned by ``harbinger()``).
+        - ``None`` — no shading.
     highlight_cases : bool
         If True, draw cases in red and controls in blue. If False, all
         trajectories are drawn in a neutral grey (useful when there is no
@@ -159,11 +163,11 @@ def plot_motifs(
                 ax_.fill_between(means.index, means - spread, means + spread,
                                  color=color, alpha=0.25, zorder=3)
 
-        # Motif window shading
-        if motif_window is not None:
-            ax_.axvspan(motif_window[0], motif_window[1],
-                        alpha=0.13, color=_WINDOW_COLOR, zorder=1)
-            for boundary in motif_window:
+        # Motif window shading (single tuple or per-feature dict)
+        win = motif_window.get(feat) if isinstance(motif_window, dict) else motif_window
+        if win is not None:
+            ax_.axvspan(win[0], win[1], alpha=0.13, color=_WINDOW_COLOR, zorder=1)
+            for boundary in win:
                 ax_.axvline(boundary, color="goldenrod", lw=1.0, ls="--", zorder=1)
 
         ax_.set_title(feat, fontsize=10)

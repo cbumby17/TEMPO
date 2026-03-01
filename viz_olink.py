@@ -36,14 +36,15 @@ with warnings.catch_warnings():
     results = tempo.harbinger(long, window_sizes=[2, 3], top_k=20,
                               n_permutations=999, seed=42)
 
-top_feats  = results['feature'].head(6).tolist()
-top_window = results['motif_window'].iloc[0]   # (1, 4)
+top_feats   = results['feature'].head(6).tolist()
+top_window  = results['motif_window'].iloc[0]   # (1, 4) — kept for reference
+feat_windows = dict(zip(results['feature'], results['motif_window']))
 
 print("Top features:", top_feats)
 print("Motif window:", top_window)
 
 # ── Fig 1: plot_motifs (baseline-normalised) ──────────────────────────────────
-fig1 = tempo.plot_motifs(long, features=top_feats, motif_window=top_window,
+fig1 = tempo.plot_motifs(long, features=top_feats, motif_window=feat_windows,
                          baseline_normalize=True, show_individuals=False,
                          ribbon_type='sem', figsize=(11, 4))
 # Relabel x-ticks with week names on all visible axes
@@ -106,7 +107,7 @@ axes_flat = axes.flatten()
 for ax, feat in zip(axes_flat, top_feats):
     feat_df = long_norm[long_norm['feature'] == feat]
     row = results[results['feature'] == feat].iloc[0]
-    win = row['motif_window']
+    win = feat_windows[feat]
     p   = row['p_value']
     q   = row['q_value']
 

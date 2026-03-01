@@ -178,6 +178,23 @@ class TestPlotMotifs:
         with pytest.raises(ValueError, match="ribbon_type"):
             plot_motifs(df_cont, features=["feature_000"], ribbon_type="iqr")
 
+    def test_motif_window_dict_per_feature(self, df_cont):
+        """A dict motif_window should apply each feature's own window."""
+        feats = sorted(df_cont["feature"].unique())[:2]
+        tps = sorted(df_cont["timepoint"].unique())
+        win_dict = {feats[0]: (tps[0], tps[1]), feats[1]: (tps[1], tps[2])}
+        fig = plot_motifs(df_cont, features=feats, motif_window=win_dict)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_motif_window_dict_missing_feature_no_shading(self, df_cont):
+        """Features absent from the dict should render without window shading."""
+        feat = sorted(df_cont["feature"].unique())[0]
+        fig = plot_motifs(df_cont, features=[feat], motif_window={})
+        ax = [a for a in fig.axes if a.get_visible()][0]
+        assert len(ax.patches) == 0
+        plt.close(fig)
+
 
 # ---------------------------------------------------------------------------
 # plot_enrichment
