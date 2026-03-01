@@ -161,6 +161,23 @@ class TestPlotMotifs:
         plt.close(fig_raw)
         plt.close(fig_norm)
 
+    def test_show_individuals_false_produces_valid_figure(self, df_cont):
+        """show_individuals=False should not raise and return a Figure."""
+        fig = plot_motifs(df_cont, features=["feature_000"], show_individuals=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_ribbon_type_sem_produces_valid_figure(self, df_cont):
+        """ribbon_type='sem' should not raise and return a Figure."""
+        fig = plot_motifs(df_cont, features=["feature_000"], ribbon_type="sem")
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_ribbon_type_invalid_raises(self, df_cont):
+        """An invalid ribbon_type should raise ValueError."""
+        with pytest.raises(ValueError, match="ribbon_type"):
+            plot_motifs(df_cont, features=["feature_000"], ribbon_type="iqr")
+
 
 # ---------------------------------------------------------------------------
 # plot_enrichment

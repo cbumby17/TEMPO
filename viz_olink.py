@@ -44,7 +44,8 @@ print("Motif window:", top_window)
 
 # ── Fig 1: plot_motifs (baseline-normalised) ──────────────────────────────────
 fig1 = tempo.plot_motifs(long, features=top_feats, motif_window=top_window,
-                         baseline_normalize=True, figsize=(11, 4))
+                         baseline_normalize=True, show_individuals=False,
+                         ribbon_type='sem', figsize=(11, 4))
 # Relabel x-ticks with week names on all visible axes
 for ax in [a for a in fig1.axes if a.get_visible()]:
     ax.set_xticks(sorted(long['timepoint'].unique()))
@@ -102,17 +103,14 @@ for ax, feat in zip(axes_flat, top_feats):
     for outcome, label, color in [(1, 'Fermented', case_color),
                                    (0, 'Fiber',     ctrl_color)]:
         grp = feat_df[feat_df['outcome'] == outcome]
-        # Thin individual lines
-        for _, subj_df in grp.groupby('subject_id'):
-            ax.plot(subj_df['timepoint'], subj_df['value'],
-                    color=color, alpha=0.20, lw=0.8, zorder=2)
-        # Mean ± SD ribbon
+        # Mean ± SEM ribbon (no individual lines — effect size is small)
         agg = grp.groupby('timepoint')['value']
-        means, stds = agg.mean(), agg.std()
+        means = agg.mean()
+        sems  = agg.std() / np.sqrt(agg.count())
         ax.plot(means.index, means.values, color=color, lw=2.5,
                 label=label, zorder=4)
-        ax.fill_between(means.index, means - stds, means + stds,
-                        color=color, alpha=0.18, zorder=3)
+        ax.fill_between(means.index, means - sems, means + sems,
+                        color=color, alpha=0.30, zorder=3)
 
     # Zero reference line
     ax.axhline(0, color='gray', lw=0.6, ls=':', zorder=0, alpha=0.6)

@@ -35,16 +35,18 @@ def plot_motifs(
     motif_window: Optional[tuple] = None,
     highlight_cases: bool = True,
     baseline_normalize: bool = False,
+    show_individuals: bool = True,
+    ribbon_type: str = "sd",
     ax=None,
     figsize: tuple = (10, 4),
 ) -> plt.Figure:
     """
     Plot trajectory overlays for selected features with motif window highlighting.
 
-    Each feature gets one subplot. Per-subject trajectories are drawn as thin
-    semi-transparent lines; group mean ± 1 SD bands are overlaid as thicker
-    lines with shaded ribbons. If a motif window is provided it is shaded in
-    gold with dashed boundary lines.
+    Each feature gets one subplot. Per-subject trajectories are optionally drawn
+    as thin semi-transparent lines; group mean ± SD or SEM bands are overlaid as
+    thicker lines with shaded ribbons. If a motif window is provided it is shaded
+    in gold with dashed boundary lines.
 
     Parameters
     ----------
@@ -64,6 +66,15 @@ def plot_motifs(
         plotting. This converts the y-axis to change-from-baseline (Δvalue),
         which reduces between-subject baseline variance and makes group-level
         temporal trends more visible. Default False.
+    show_individuals : bool
+        If True (default), draw thin per-subject lines behind the group ribbons.
+        Set to False to show only group mean ± ribbon — useful when individual
+        variability is high relative to the group effect.
+    ribbon_type : str
+        Width of the shaded ribbon around the group mean: ``'sd'`` (default)
+        for ±1 standard deviation, or ``'sem'`` for ±1 standard error of the
+        mean. SEM ribbons are narrower (SD / √n) and better reflect the
+        precision of the group mean rather than individual spread.
     ax : matplotlib.axes.Axes, optional
         Pre-existing axes to draw into. Only used when exactly one feature is
         requested; ignored for multi-feature layouts.
@@ -74,7 +85,15 @@ def plot_motifs(
     Returns
     -------
     matplotlib.figure.Figure
+
+    Raises
+    ------
+    ValueError
+        If ribbon_type is not 'sd' or 'sem'.
     """
+    if ribbon_type not in ("sd", "sem"):
+        raise ValueError("ribbon_type must be 'sd' or 'sem'.")
+
     if features is None:
         features = sorted(df["feature"].unique())[:4]
 
@@ -113,26 +132,32 @@ def plot_motifs(
             )
             feat_df["value"] = feat_df["value"] - feat_df["subject_id"].map(baselines)
 
-        # Individual subject lines
-        for _, grp in feat_df.groupby("subject_id"):
-            if has_outcome:
-                outcome = grp["outcome"].iloc[0]
-                color = _CASE_COLOR if outcome == 1 else _CTRL_COLOR
-                alpha = 0.45 if outcome == 1 else 0.28
-            else:
-                color, alpha = "#888888", 0.3
-            ax_.plot(grp["timepoint"], grp["value"],
-                     color=color, alpha=alpha, lw=1.0, zorder=2)
+        # Individual subject lines (optional)
+        if show_individuals:
+            for _, grp in feat_df.groupby("subject_id"):
+                if has_outcome:
+                    outcome = grp["outcome"].iloc[0]
+                    color = _CASE_COLOR if outcome == 1 else _CTRL_COLOR
+                    alpha = 0.45 if outcome == 1 else 0.28
+                else:
+                    color, alpha = "#888888", 0.3
+                ax_.plot(grp["timepoint"], grp["value"],
+                         color=color, alpha=alpha, lw=1.0, zorder=2)
 
-        # Group mean ± SD bands
+        # Group mean ± ribbon bands
         if has_outcome:
             for outcome, color in [(1, _CASE_COLOR), (0, _CTRL_COLOR)]:
                 grp_agg = feat_df[feat_df["outcome"] == outcome].groupby("timepoint")["value"]
                 means = grp_agg.mean()
                 stds = grp_agg.std()
+                if ribbon_type == "sem":
+                    counts = grp_agg.count()
+                    spread = stds / np.sqrt(counts)
+                else:
+                    spread = stds
                 ax_.plot(means.index, means.values, color=color, lw=2.5, zorder=4)
-                ax_.fill_between(means.index, means - stds, means + stds,
-                                 color=color, alpha=0.15, zorder=3)
+                ax_.fill_between(means.index, means - spread, means + spread,
+                                 color=color, alpha=0.25, zorder=3)
 
         # Motif window shading
         if motif_window is not None:
