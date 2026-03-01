@@ -16,7 +16,8 @@ import matplotlib.pyplot as plt
 import matplotlib.figure
 
 from tempo import simulate
-from tempo.viz import plot_motifs, plot_enrichment
+from tempo.viz import plot_motifs, plot_enrichment, plot_survival
+from tempo.viz import _km_estimator
 
 
 # ---------------------------------------------------------------------------
@@ -219,5 +220,126 @@ class TestPlotEnrichment:
         sig_df = results_df.copy()
         sig_df["p_value"] = 0.001
         fig = plot_enrichment(sig_df)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# _km_estimator
+# ---------------------------------------------------------------------------
+
+class TestKMEstimator:
+
+    def test_starts_at_time_zero_prob_one(self):
+        t, s = _km_estimator([1, 2, 3, 4], [1, 1, 1, 0])
+        assert t[0] == 0.0
+        assert s[0] == 1.0
+
+    def test_non_increasing(self):
+        t, s = _km_estimator([1, 2, 3, 5, 8], [1, 0, 1, 1, 0])
+        assert (np.diff(s) <= 1e-12).all(), "Survival probabilities must be non-increasing"
+
+    def test_all_events(self):
+        """All events: S reaches 0 at the last observed time."""
+        t, s = _km_estimator([1, 2, 3], [1, 1, 1])
+        assert s[-1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_no_events_flat_at_one(self):
+        """All censored: S stays at 1.0 throughout (no steps)."""
+        t, s = _km_estimator([1, 2, 3], [0, 0, 0])
+        assert (s == 1.0).all()
+
+    def test_known_values(self):
+        """Hand-computed KM: events at t=1,3; censored at t=2,4; n=4.
+        t=1: n_at_risk=4, d=1 → S(1) = 3/4 = 0.75
+        t=2: censored (d=0), n_at_risk drops to 2
+        t=3: n_at_risk=2, d=1 → S(3) = 0.75 * 1/2 = 0.375"""
+        t, s = _km_estimator([1, 2, 3, 4], [1, 0, 1, 0])
+        idx1 = np.where(t == 1)[0][0]
+        idx3 = np.where(t == 3)[0][0]
+        assert s[idx1] == pytest.approx(0.75, abs=1e-9)
+        assert s[idx3] == pytest.approx(0.375, abs=1e-9)
+
+    def test_tied_events(self):
+        """Tied events at t=2; censored at t=1; n=4.
+        t=1: censored (d=0), n_at_risk drops to 3
+        t=2: n_at_risk=3, d=2 → S(2) = 1 * 1/3 ≈ 0.333"""
+        t, s = _km_estimator([1, 2, 2, 3], [0, 1, 1, 0])
+        idx = np.where(t == 2)[0][0]
+        assert s[idx] == pytest.approx(1 / 3, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# plot_survival
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def df_survival():
+    return simulate.simulate_continuous(
+        n_subjects=20, n_timepoints=10, n_features=4, n_cases=10,
+        motif_features=[0], motif_window=(3, 6),
+        motif_strength=3.0, noise_sd=0.3,
+        outcome_type="survival", seed=42,
+    )
+
+
+class TestPlotSurvival:
+
+    def test_returns_figure(self, df_survival):
+        fig = plot_survival(df_survival, "feature_000", (3, 6))
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_two_lines_in_axes(self, df_survival):
+        """Should draw exactly 2 step-function lines (one per group)."""
+        fig = plot_survival(df_survival, "feature_000", (3, 6))
+        ax = fig.axes[0]
+        # Step lines are Line2D objects; filter by label
+        labelled = [l for l in ax.get_lines() if l.get_label().startswith("Motif")]
+        assert len(labelled) == 2
+        plt.close(fig)
+
+    def test_axes_labels(self, df_survival):
+        fig = plot_survival(df_survival, "feature_000", (3, 6))
+        ax = fig.axes[0]
+        assert "time_to_event" in ax.get_xlabel().lower()
+        assert "survival" in ax.get_ylabel().lower()
+        plt.close(fig)
+
+    def test_y_axis_within_unit_interval(self, df_survival):
+        """Y-axis should be bounded in [0, ~1]."""
+        fig = plot_survival(df_survival, "feature_000", (3, 6))
+        ax = fig.axes[0]
+        ymin, ymax = ax.get_ylim()
+        assert ymin >= -0.05
+        assert ymax <= 1.15
+        plt.close(fig)
+
+    def test_custom_time_and_event_cols(self):
+        """plot_survival respects time_col and event_col parameters."""
+        df = simulate.simulate_continuous(
+            n_subjects=16, n_timepoints=8, n_features=2, n_cases=8,
+            motif_features=[0], motif_window=(2, 5),
+            motif_strength=3.0, noise_sd=0.3,
+            outcome_type="survival", seed=1,
+        )
+        df = df.rename(columns={"time_to_event": "tte", "outcome": "event"})
+        fig = plot_survival(df, "feature_000", (2, 5),
+                            time_col="tte", event_col="event")
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_no_error_with_all_events(self):
+        """If all subjects experience the event, S reaches 0 — should not raise."""
+        df = simulate.simulate_continuous(
+            n_subjects=10, n_timepoints=8, n_features=2, n_cases=5,
+            motif_features=[0], motif_window=(2, 4),
+            motif_strength=3.0, noise_sd=0.3,
+            outcome_type="survival", seed=2,
+        )
+        # Force all to event
+        df["outcome"] = 1
+        df["time_to_event"] = df["time_to_event"].clip(lower=1)
+        fig = plot_survival(df, "feature_000", (2, 4))
         assert isinstance(fig, matplotlib.figure.Figure)
         plt.close(fig)

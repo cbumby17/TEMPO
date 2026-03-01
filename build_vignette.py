@@ -684,6 +684,269 @@ fig.suptitle('Enrichment summary — non-compositional (immune marker) data',
 plt.show()\
 """),
 
+
+# ── 10  Continuous/ranked outcomes ───────────────────────────────────────────
+md("""\
+---
+## 10  Continuous and Ranked Outcomes
+
+Not every longitudinal study produces a clean binary case/control label.
+Common continuous or ranked outcomes include:
+
+- A **clinical severity score** at follow-up (e.g. a composite disease activity index,
+  a validated questionnaire score, a continuous physiological measurement)
+- A **biomarker level** at a fixed post-perturbation timepoint (e.g. peak viral load,
+  antibody titre, fasting glucose at week 12)
+- A **treatment response score** (e.g. percent change from baseline in tumour volume,
+  a ranked RECIST response category)
+
+TEMPO supports continuous outcomes in two complementary ways:
+
+**1. Binarization at a threshold.** Split subjects at the median (or a clinically
+meaningful cutoff) to get a 0/1 label, then run `harbinger()` as normal. The
+enrichment score is the mean difference between high-outcome and low-outcome
+subjects. This is the simplest and most robust approach for discovery.
+
+**2. Multi-method enrichment scoring via `enrichment_score()`.** Once a motif
+window has been identified — either by harbinger or from prior knowledge — the
+three scoring methods offer different perspectives on the case/control separation:
+
+| Method | Null value | Best when |
+|---|---|---|
+| `mean_difference` | 0 | Simple, interpretable; good all-round choice |
+| `auc` | 0.5 | Outcomes are noisy; you care about rank-ordering, not magnitude |
+| `gsea` | 0 | Subjects vary in how strongly they express the motif; rewards top-clustering |
+
+The GSEA-style score is most powerful when a minority of subjects show a very
+strong motif signal and the rest are closer to noise — analogous to gene-set
+enrichment analysis where only a fraction of set members are truly driving the
+signal.
+
+Below we simulate a dataset with a continuous outcome, binarize at the median
+for harbinger, then compare all three scoring methods on the top-ranked feature.
+\
+"""),
+
+code("""\
+# ── Simulate with continuous outcome ─────────────────────────────────────────
+# Framing: 40 subjects measured over 12 timepoints; each receives a continuous
+# outcome score (e.g. a composite disease index at the end of follow-up).
+# Cases (high-outcome subjects) show a trajectory motif at timepoints 3-8.
+
+df_cont = simulate.simulate_continuous(
+    n_subjects=40, n_timepoints=12, n_features=10, n_cases=20,
+    motif_features=[0, 1, 2], motif_window=(3, 8),
+    motif_type='step', motif_strength=2.5, noise_sd=0.5,
+    outcome_type='continuous',   # outcome becomes a continuous float
+    seed=42,
+)
+
+# Show the continuous outcome distribution
+subject_outcomes = df_cont[['subject_id', 'outcome']].drop_duplicates('subject_id')
+print(f"Outcome range  : [{subject_outcomes['outcome'].min():.3f}, "
+      f"{subject_outcomes['outcome'].max():.3f}]")
+print(f"Outcome mean   : {subject_outcomes['outcome'].mean():.3f}")
+print(f"Outcome median : {subject_outcomes['outcome'].median():.3f}")
+print()
+
+fig, ax = plt.subplots(figsize=(7, 3.5))
+ax.hist(subject_outcomes['outcome'], bins=20, color='steelblue', alpha=0.75, edgecolor='white')
+ax.axvline(subject_outcomes['outcome'].median(), color='red', lw=2, ls='--',
+           label=f"Median = {subject_outcomes['outcome'].median():.3f}")
+ax.set_xlabel('Continuous outcome score')
+ax.set_ylabel('Count')
+ax.set_title('Simulated continuous outcome distribution')
+ax.legend()
+plt.tight_layout()
+plt.show()\
+"""),
+
+code("""\
+import warnings
+
+# ── Binarize at median → run harbinger ────────────────────────────────────────
+# For harbinger we need binary labels. We split at the median outcome score:
+# subjects above median → high-outcome (1); below → low-outcome (0).
+threshold_cont = float(subject_outcomes['outcome'].median())
+binary_map = (subject_outcomes.set_index('subject_id')['outcome'] >= threshold_cont).astype(int)
+df_cont['outcome_binary'] = df_cont['subject_id'].map(binary_map)
+
+print(f"Binarized at median = {threshold_cont:.3f}  |  "
+      f"high-outcome n={binary_map.sum()}  low-outcome n={len(binary_map)-binary_map.sum()}")
+
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore')
+    results_cont = tempo.harbinger(
+        df_cont, outcome_col='outcome_binary',
+        window_size_range=(3, 6), top_k=10, n_permutations=999, seed=42,
+    )
+
+print("\\nHarbinger results (binarized continuous outcome):")
+print(results_cont[['feature', 'window_size', 'motif_window',
+                     'enrichment_score', 'p_value', 'q_value']].to_string(index=False))
+
+# ── Compare all three enrichment scoring methods ──────────────────────────────
+top_feat_cont = results_cont['feature'].iloc[0]
+top_win_cont  = results_cont['motif_window'].iloc[0]
+
+print(f"\\nEnrichment scores for {top_feat_cont} at window {top_win_cont}:")
+for method in ['mean_difference', 'auc', 'gsea']:
+    score = tempo.enrichment_score(df_cont, top_feat_cont, top_win_cont,
+                                   outcome_col='outcome_binary', method=method)
+    print(f"  {method:20s}: {score:.4f}")
+
+# ── Scatter: continuous outcome vs per-subject window score ───────────────────
+win_df = df_cont[(df_cont['feature'] == top_feat_cont) &
+                 (df_cont['timepoint'].between(top_win_cont[0], top_win_cont[1]))]
+subj_win = win_df.groupby('subject_id')['value'].mean().reset_index()
+subj_win.columns = ['subject_id', 'window_score']
+scatter_df = subj_win.merge(subject_outcomes, on='subject_id')
+
+fig, ax = plt.subplots(figsize=(6, 4.5))
+sc = ax.scatter(scatter_df['window_score'], scatter_df['outcome'],
+                c=scatter_df['outcome'], cmap='RdBu_r', alpha=0.8, s=60)
+plt.colorbar(sc, ax=ax, label='Continuous outcome')
+ax.set_xlabel(f'Mean feature value in window {top_win_cont}\\n({top_feat_cont})')
+ax.set_ylabel('Continuous outcome score')
+ax.set_title(f'Per-subject window score vs continuous outcome\\n'
+             f'{top_feat_cont} — Spearman ρ = '
+             f'{scatter_df["window_score"].corr(scatter_df["outcome"], method="spearman"):.3f}')
+plt.tight_layout()
+plt.show()\
+"""),
+
+# ── 11  Survival-integrated analysis ─────────────────────────────────────────
+md("""\
+---
+## 11  Survival-Integrated Analysis
+
+The most clinically natural outcome in many cohort studies is **time-to-event**:
+when did the subject develop the outcome of interest — and did they ever develop
+it before the study ended (or were they lost to follow-up)?
+
+Examples:
+- Time to **transplant rejection** after a solid organ transplant
+- Time to **relapse** after cancer treatment
+- Time to **seroconversion** after a vaccination challenge
+- Days to **first fever** after a dietary intervention
+
+`tempo.survival_test()` connects trajectory motifs to time-to-event outcomes.
+Subjects are stratified at the **median motif score** — those above are labelled
+"motif-positive" (showed a strong case-like trajectory pattern); those below are
+"motif-negative". The survival curves of the two groups are then compared.
+
+Two statistical methods are available:
+
+**Log-rank test** (via `scipy.stats.logrank`): a non-parametric test for equality
+of survival curves. It is threshold-free — the test integrates over all event
+times rather than comparing at a single point. Works without any optional
+dependencies. Use this when you want a significance test with good power under
+the proportional hazards assumption.
+
+**Cox proportional hazards** (via `lifelines`, optional): instead of stratifying
+at the median, the continuous motif score is used directly as a covariate. The
+hazard ratio (HR) tells you how much the event risk changes per one-unit increase
+in motif score. This is more informative than the log-rank test when the
+relationship between motif strength and survival is graded. Install lifelines with
+`pip install tempo-bio[survival]`.
+
+`tempo.plot_survival()` draws the Kaplan-Meier survival curves for the two
+motif-stratified groups, with censored observations marked as "+" ticks. No
+external library is required — the KM estimator is implemented in pure numpy.
+\
+"""),
+
+code("""\
+# ── Simulate with survival (time-to-event) outcome ───────────────────────────
+# Framing: 60 subjects, 12 timepoints, 10 immune markers.
+# 25 subjects eventually experience the event (event=1); 35 are censored (event=0).
+# Subjects who experience the event show a trajectory motif at timepoints 3-8.
+
+df_surv = simulate.simulate_continuous(
+    n_subjects=60, n_timepoints=12, n_features=10, n_cases=25,
+    motif_features=[0, 1, 2], motif_window=(3, 8),
+    motif_type='step', motif_strength=2.5, noise_sd=0.5,
+    outcome_type='survival',     # adds 'time_to_event' column; outcome = event indicator
+    seed=42,
+)
+
+print(f"Shape           : {df_surv.shape}")
+print(f"Columns         : {list(df_surv.columns)}")
+n_events = df_surv[['subject_id', 'outcome']].drop_duplicates()['outcome'].sum()
+n_total = df_surv['subject_id'].nunique()
+print(f"Subjects        : {n_total}  ({int(n_events)} events, {n_total-int(n_events)} censored)")
+print(f"Time range      : {df_surv['time_to_event'].min()}–{df_surv['time_to_event'].max()}")
+print()
+
+# Run harbinger using the binary event indicator as the outcome column.
+# This discovers which features show a trajectory motif in event subjects.
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore')
+    results_surv = tempo.harbinger(
+        df_surv, window_size_range=(3, 6), top_k=10, n_permutations=999, seed=42,
+    )
+
+print("Harbinger results (event indicator as outcome):")
+print(results_surv[['feature', 'window_size', 'motif_window',
+                     'enrichment_score', 'p_value', 'q_value']].to_string(index=False))\
+"""),
+
+code("""\
+# ── survival_test: log-rank and Cox ───────────────────────────────────────────
+top_feat_surv = results_surv['feature'].iloc[0]
+top_win_surv  = results_surv['motif_window'].iloc[0]
+
+print(f"Top feature     : {top_feat_surv}")
+print(f"Motif window    : {top_win_surv}")
+print()
+
+# Log-rank test — stratify at median motif score, compare survival curves
+lr = tempo.survival_test(df_surv, top_feat_surv, top_win_surv, method='logrank')
+print("Log-rank test:")
+for k, v in lr.items():
+    print(f"  {k}: {v}")
+
+print()
+
+# Cox proportional hazards — uses continuous motif score directly (no binning)
+try:
+    cox = tempo.survival_test(df_surv, top_feat_surv, top_win_surv, method='cox')
+    print("Cox PH model (continuous motif score as covariate):")
+    for k, v in cox.items():
+        print(f"  {k}: {v}")
+except ImportError as e:
+    print(f"lifelines not installed — skipping Cox model ({e})")
+    print("Install with: pip install tempo-bio[survival]")\
+"""),
+
+code("""\
+# ── Kaplan-Meier plot ─────────────────────────────────────────────────────────
+# plot_survival() uses a pure-numpy KM estimator — no lifelines needed.
+# Subjects are split at the median motif score (Motif+ / Motif−).
+# Censored observations are marked with '+' ticks on the survival curves.
+
+fig = tempo.plot_survival(
+    df_surv, top_feat_surv, top_win_surv,
+    time_col='time_to_event', event_col='outcome',
+)
+fig.suptitle(
+    f'KM curves by motif score   |   {top_feat_surv}, window {top_win_surv}\\n'
+    f'log-rank p = {lr["p_value"]:.3f}',
+    fontsize=10, y=1.02,
+)
+plt.show()
+
+# ── Evaluation against ground truth ───────────────────────────────────────────
+sig_surv = results_surv[results_surv['q_value'] < 0.05]['feature'].tolist()
+top_det_win = results_surv.iloc[0]['motif_window']
+rep_surv = simulate.evaluation_report(sig_surv, top_det_win, df_surv)
+print(f"Significant features (q < 0.05) : {sig_surv}")
+print(f"Detected window                 : {top_det_win}  (true: (3, 8))")
+print(f"Feature recall    = {rep_surv['feature_recall']:.3f}")
+print(f"Feature precision = {rep_surv['feature_precision']:.3f}")
+print(f"Window Jaccard    = {rep_surv['window_jaccard']:.3f}")\
+"""),
+
 ]  # end nb.cells
 
 nbformat.write(nb, 'vignette.ipynb')

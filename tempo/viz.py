@@ -8,6 +8,10 @@ Publication-ready visualisation functions for TEMPO analysis results.
 
     plot_enrichment  — two-panel summary of harbinger() results: enrichment scores
                        (with significance stars) and -log10(p) bars.
+
+    plot_survival    — Kaplan-Meier survival curves for two groups stratified by
+                       motif score (motif-positive vs motif-negative). No external
+                       survival library required.
 """
 
 import numpy as np
@@ -239,6 +243,91 @@ def plot_enrichment(
     return fig
 
 
+def plot_survival(
+    df: pd.DataFrame,
+    feature: str,
+    motif_window: tuple,
+    time_col: str = "time_to_event",
+    event_col: str = "outcome",
+    figsize: tuple = (7, 5),
+) -> plt.Figure:
+    """
+    Kaplan-Meier survival curves stratified by trajectory motif strength.
+
+    Subjects are split into "Motif+" (window score ≥ median) and "Motif−"
+    (window score < median) groups. KM curves are estimated using a
+    pure-numpy implementation — no external survival library required.
+
+    Censored observations are marked with a "+" symbol at their censoring
+    time and the current survival probability.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with columns: subject_id, timepoint, feature,
+        value, plus time_col and event_col. Typically from
+        simulate_longitudinal(outcome_type="survival") or
+        simulate_continuous(outcome_type="survival").
+    feature : str
+        Feature to use for motif-score stratification.
+    motif_window : tuple of (int, int)
+        (start, end) timepoints defining the motif window.
+    time_col : str
+        Column containing time-to-event values.
+    event_col : str
+        Column containing the event indicator (1 = event, 0 = censored).
+    figsize : tuple
+        (width, height) in inches.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    # Per-subject mean feature value in the motif window
+    feat_df = df[df["feature"] == feature]
+    window_df = feat_df[feat_df["timepoint"].between(motif_window[0], motif_window[1])]
+    subj_scores = window_df.groupby("subject_id")["value"].mean().reset_index()
+    subj_scores.columns = ["subject_id", "score"]
+
+    # Join survival metadata (one row per subject)
+    survival = (
+        df[["subject_id", time_col, event_col]]
+        .drop_duplicates("subject_id")
+        .set_index("subject_id")
+    )
+    data = subj_scores.set_index("subject_id").join(survival).reset_index()
+
+    threshold = float(data["score"].median())
+    data["group"] = (data["score"] >= threshold).map({True: "Motif+", False: "Motif\u2212"})
+
+    fig, ax = plt.subplots(figsize=figsize)
+    palette = {"Motif+": _CASE_COLOR, "Motif\u2212": _CTRL_COLOR}
+
+    for group_name, color in palette.items():
+        grp = data[data["group"] == group_name]
+        if len(grp) == 0:
+            continue
+        t_km, s_km = _km_estimator(grp[time_col].values, grp[event_col].values)
+        ax.step(t_km, s_km, where="post", color=color, lw=2.0,
+                label=f"{group_name}  (n={len(grp)})")
+
+        # Censor tick marks
+        for tc in grp.loc[grp[event_col] == 0, time_col].values:
+            idx = max(0, int(np.searchsorted(t_km, tc, side="right")) - 1)
+            ax.plot(tc, s_km[idx], "+", color=color, ms=9, mew=1.8, zorder=5)
+
+    ax.set_xlabel(f"Time ({time_col})")
+    ax.set_ylabel("Survival probability")
+    ax.set_title(
+        f"Kaplan-Meier by motif score — {feature}\n"
+        f"Window {motif_window}  |  split at score median = {threshold:.3f}"
+    )
+    ax.set_ylim(0, 1.08)
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -252,3 +341,56 @@ def _sig_stars(p: float) -> str:
     if p < 0.05:
         return "*"
     return ""
+
+
+def _km_estimator(times, events):
+    """
+    Kaplan-Meier survival estimator (pure numpy, no external dependencies).
+
+    Parameters
+    ----------
+    times : array-like of float
+        Time-to-event or censoring times.
+    events : array-like of int
+        Event indicator: 1 = event occurred, 0 = censored.
+
+    Returns
+    -------
+    t_out : np.ndarray
+        Time points starting at 0.
+    s_out : np.ndarray
+        Survival probability at each time point; starts at 1.0.
+    """
+    times = np.asarray(times, dtype=float)
+    events = np.asarray(events, dtype=int)
+
+    order = np.argsort(times, kind="stable")
+    t_sorted = times[order]
+    e_sorted = events[order]
+
+    n_at_risk = len(t_sorted)
+    s = 1.0
+    t_out = [0.0]
+    s_out = [1.0]
+
+    i = 0
+    while i < len(t_sorted):
+        ti = t_sorted[i]
+        d = 0      # events at this time
+        n_tied = 0
+        j = i
+        while j < len(t_sorted) and t_sorted[j] == ti:
+            if e_sorted[j] == 1:
+                d += 1
+            n_tied += 1
+            j += 1
+
+        if d > 0:
+            s = s * (n_at_risk - d) / n_at_risk
+            t_out.append(float(ti))
+            s_out.append(float(s))
+
+        n_at_risk -= n_tied
+        i = j
+
+    return np.array(t_out, dtype=float), np.array(s_out, dtype=float)

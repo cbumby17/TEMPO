@@ -91,6 +91,8 @@ For a full walkthrough with biological context and interpretation guidance, see 
 | 7 Permutation test | Fixed-window confirmatory testing |
 | 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
 | 9 Non-compositional data | Full workflow for flow cytometry / expression / clinical data (no CLR) |
+| 10 Continuous outcomes | Binarize at median, compare `mean_difference` / `auc` / `gsea` scoring methods |
+| 11 Survival analysis | `survival_test()` log-rank and Cox PH, `plot_survival()` KM curves |
 
 Each section includes prose explaining the biological and statistical reasoning.
 The notebook is pre-executed — visualizations are visible directly on GitHub
@@ -113,9 +115,9 @@ or in any notebook viewer without running any code.
 
 | Framework | Use When |
 |---|---|
-| **Permutation enrichment** | Binary outcomes (case/control), general purpose |
-| **Harbinger enrichment score** | Continuous or ranked outcomes (analogous to GSEA) |
-| **Survival-integrated** | Time-to-event outcomes (diagnosis date, relapse, graft failure) |
+| **Permutation enrichment** | Binary outcomes (case/control), general purpose — demonstrated in §7 |
+| **Harbinger enrichment score** | Continuous or ranked outcomes (analogous to GSEA) — demonstrated in §10 |
+| **Survival-integrated** | Time-to-event outcomes (diagnosis date, relapse, graft failure) — demonstrated in §11 |
 
 ---
 
