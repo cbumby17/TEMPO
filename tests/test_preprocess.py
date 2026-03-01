@@ -186,3 +186,91 @@ class TestPreprocess:
     def test_invalid_method_raises(self, df_comp):
         with pytest.raises(ValueError, match="Unknown method"):
             preprocess(df_comp, method="manhattan")
+
+
+# ---------------------------------------------------------------------------
+# check_baseline
+# ---------------------------------------------------------------------------
+
+class TestCheckBaseline:
+
+    @pytest.fixture
+    def df_balanced(self):
+        """Cases and controls have identical baseline distributions."""
+        from tempo import simulate
+        return simulate.simulate_longitudinal(
+            n_subjects=30, n_timepoints=8, n_features=4, n_cases=15,
+            motif_features=[0], motif_window=(3, 6),
+            motif_strength=3.0, noise_sd=0.05, seed=99,
+        )
+
+    @pytest.fixture
+    def df_imbalanced(self):
+        """Manually inject a large baseline difference into one feature."""
+        from tempo import simulate
+        df = simulate.simulate_longitudinal(
+            n_subjects=30, n_timepoints=8, n_features=4, n_cases=15,
+            motif_features=[], motif_window=(2, 5),
+            motif_strength=0.0, noise_sd=0.05, seed=7,
+        )
+        # Inflate feature_000 at tp=0 for cases only
+        mask = (df["feature"] == "feature_000") & (df["timepoint"] == 0) & (df["outcome"] == 1)
+        df.loc[mask, "value"] += 0.5
+        # Re-normalise so rows still sum to ~1
+        for subj in df[df["outcome"] == 1]["subject_id"].unique():
+            tp0 = (df["subject_id"] == subj) & (df["timepoint"] == 0)
+            total = df.loc[tp0, "value"].sum()
+            if total > 0:
+                df.loc[tp0, "value"] /= total
+        return df
+
+    def test_returns_dataframe(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_expected_columns(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert set(result.columns) == {
+            "feature", "baseline_tp", "case_mean", "ctrl_mean",
+            "mean_diff", "p_value", "significant",
+        }
+
+    def test_one_row_per_feature(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert len(result) == df_balanced["feature"].nunique()
+
+    def test_sorted_by_p_value(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert result["p_value"].is_monotonic_increasing
+
+    def test_balanced_baseline_not_significant(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert not result["significant"].any()
+
+    def test_imbalanced_baseline_detected(self, df_imbalanced):
+        from tempo import check_baseline
+        result = check_baseline(df_imbalanced)
+        sig = result[result["significant"]]
+        assert "feature_000" in sig["feature"].values
+
+    def test_default_timepoint_is_earliest(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert (result["baseline_tp"] == df_balanced["timepoint"].min()).all()
+
+    def test_custom_timepoint(self, df_balanced):
+        from tempo import check_baseline
+        tp = sorted(df_balanced["timepoint"].unique())[2]
+        result = check_baseline(df_balanced, timepoint=tp)
+        assert (result["baseline_tp"] == tp).all()
+
+    def test_p_values_in_unit_interval(self, df_balanced):
+        from tempo import check_baseline
+        result = check_baseline(df_balanced)
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()

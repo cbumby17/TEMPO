@@ -55,7 +55,7 @@ class TestHarbingerSchema:
         result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
         assert set(result.columns) == {
             "feature", "window_size", "motif_window", "enrichment_score",
-            "p_value", "matrix_profile_min"
+            "p_value", "q_value", "matrix_profile_min"
         }
 
     def test_top_k_respected(self, df_small):
@@ -93,6 +93,44 @@ class TestHarbingerSchema:
         n_tp = df_small["timepoint"].nunique()
         with pytest.raises(ValueError, match="window_size"):
             harbinger(df_small, window_size=n_tp, n_permutations=10)
+
+    def test_q_values_in_unit_interval(self, df_small):
+        result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
+        assert (result["q_value"] >= 0).all()
+        assert (result["q_value"] <= 1).all()
+
+    def test_q_values_geq_p_values(self, df_small):
+        """BH q-values are always >= the corresponding raw p-values."""
+        result = harbinger(df_small, window_size=3, top_k=4, n_permutations=50, seed=0)
+        assert (result["q_value"] >= result["p_value"] - 1e-9).all()
+
+    def test_bh_correct_known_values(self):
+        """Verify _bh_correct against a hand-computed BH example.
+
+        p = [0.01, 0.04, 0.20, 0.06]  (n=4)
+        Sorted: [0.01, 0.04, 0.06, 0.20] at ranks 1,2,3,4
+        BH raw: [0.04, 0.08, 0.08, 0.20]  (p * n / rank)
+        After monotonicity enforcement: [0.04, 0.08, 0.08, 0.20]
+        Mapped back: q[0]=0.04, q[1]=0.08, q[2]=0.20, q[3]=0.08
+        """
+        from tempo.harbinger import _bh_correct
+        p = np.array([0.01, 0.04, 0.20, 0.06])
+        q = _bh_correct(p)
+        assert q[0] == pytest.approx(0.04, abs=1e-9)
+        assert q[1] == pytest.approx(0.08, abs=1e-9)
+        assert q[2] == pytest.approx(0.20, abs=1e-9)
+        assert q[3] == pytest.approx(0.08, abs=1e-9)
+        assert (q <= 1).all()
+
+    def test_bh_correct_monotone(self):
+        """q-values sorted by p-value must be non-decreasing."""
+        from tempo.harbinger import _bh_correct
+        rng = np.random.default_rng(0)
+        p = rng.uniform(0, 1, 20)
+        q = _bh_correct(p)
+        order = np.argsort(p)
+        q_sorted = q[order]
+        assert (np.diff(q_sorted) >= -1e-12).all()
 
 
 # ---------------------------------------------------------------------------

@@ -271,7 +271,10 @@ harbinger on raw proportions avoids this entirely.
 - For non-compositional data (cytokine concentrations, expression values,
   clinical measurements) no transformation is needed before `harbinger()`.
 
-The code below applies CLR for visualization purposes only.
+The code below applies CLR for visualization purposes, then runs
+`tempo.check_baseline()` to verify that cases and controls are equivalent at
+the first timepoint — the foundational assumption that makes TEMPO's results
+interpretable as post-perturbation divergence rather than pre-existing difference.
 \
 """),
 
@@ -288,6 +291,19 @@ print(f"Raw value range : [{df['value'].min():.3f}, {df['value'].max():.3f}]")
 print()
 print("CLR is computed here for visualization (sections 5-6).")
 print("Harbinger (section 4) runs on raw proportions — see note above.")
+
+# ── Baseline equivalence check ────────────────────────────────────────────────
+print("\\n--- Baseline equivalence check ---")
+baseline_report = tempo.check_baseline(df)
+sig_baseline = baseline_report[baseline_report['significant']]
+if len(sig_baseline) == 0:
+    print("No features show significant case/control differences at baseline (tp=0).")
+    print("TEMPO's core assumption appears satisfied for this dataset.")
+else:
+    print(f"WARNING: {len(sig_baseline)} feature(s) differ significantly at baseline:")
+    print(sig_baseline[['feature','case_mean','ctrl_mean','mean_diff','p_value']].to_string(index=False))
+print()
+print(baseline_report[['feature','case_mean','ctrl_mean','p_value','significant']].to_string(index=False))
 
 # ── Plot CLR trajectories ─────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -368,7 +384,7 @@ results = tempo.harbinger(df, window_size_range=(3, 6), top_k=15, n_permutations
 
 print("Harbinger results (top 15 features, sorted by enrichment score):")
 print(results[['feature', 'window_size', 'motif_window',
-               'enrichment_score', 'p_value']].to_string(index=False))
+               'enrichment_score', 'p_value', 'q_value']].to_string(index=False))
 \
 """),
 
@@ -523,14 +539,18 @@ results will be used to make a clinical decision.
 """),
 
 code("""\
-# Use features with p < 0.05 as the detected set
-sig_features = results[results['p_value'] < 0.05]['feature'].tolist()
+# Use FDR-adjusted q_value < 0.05 as the significance threshold.
+# q_value is Benjamini-Hochberg corrected across all features tested —
+# more appropriate than raw p_value when screening many features at once.
+sig_features = results[results['q_value'] < 0.05]['feature'].tolist()
 detected_window = results['motif_window'].iloc[0]
 
-print(f"Significant features (p < 0.05) : {sig_features}")
+print(f"Significant features (q < 0.05) : {sig_features}")
 print(f"Detected window (top feature)   : {detected_window}")
 print(f"True signal features            : {df.attrs['motif_features']}")
 print(f"True response window            : {df.attrs['motif_window']}")
+print(f"\\nAll results with p and q values:")
+print(results[['feature','p_value','q_value']].to_string(index=False))
 print()
 
 report = simulate.evaluation_report(

@@ -184,3 +184,86 @@ def bray_curtis_trajectory(
     result = pd.DataFrame(records)
     result.attrs = df.attrs.copy()
     return result
+
+
+def check_baseline(
+    df: pd.DataFrame,
+    timepoint=None,
+    outcome_col: str = "outcome",
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    Test whether cases and controls differ at baseline.
+
+    For each feature, compares case and control values at the specified
+    baseline timepoint using a two-sided Mann-Whitney U test. Features
+    with a significant difference at baseline may confound Harbinger
+    analysis — the detected motif could reflect a pre-existing difference
+    rather than a post-perturbation trajectory divergence.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with columns: subject_id, timepoint, feature,
+        value, outcome. The same format accepted by harbinger().
+    timepoint : int or float, optional
+        The timepoint to use as baseline. Defaults to the earliest timepoint
+        in the data.
+    outcome_col : str
+        Column containing binary outcome labels (1 = case, 0 = control).
+    alpha : float
+        Significance threshold for the ``significant`` flag column.
+        Default 0.05.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per feature with columns:
+          feature        — feature name
+          baseline_tp    — the timepoint tested
+          case_mean      — mean value in cases at baseline
+          ctrl_mean      — mean value in controls at baseline
+          mean_diff      — case_mean − ctrl_mean
+          p_value        — two-sided Mann-Whitney U p-value
+          significant    — True if p_value < alpha
+
+        Sorted by p_value ascending so the most concerning features appear
+        first.
+
+    Examples
+    --------
+    >>> df = tempo.load_example_data()
+    >>> report = tempo.check_baseline(df)
+    >>> report[report['significant']]   # features with baseline imbalance
+    """
+    from scipy.stats import mannwhitneyu
+
+    if timepoint is None:
+        timepoint = df["timepoint"].min()
+
+    baseline = df[df["timepoint"] == timepoint]
+
+    records = []
+    for feat, feat_df in baseline.groupby("feature"):
+        cases = feat_df[feat_df[outcome_col] == 1]["value"].values
+        ctrls = feat_df[feat_df[outcome_col] == 0]["value"].values
+
+        if len(cases) < 2 or len(ctrls) < 2:
+            continue
+
+        stat, p = mannwhitneyu(cases, ctrls, alternative="two-sided")
+        records.append({
+            "feature": feat,
+            "baseline_tp": timepoint,
+            "case_mean": float(cases.mean()),
+            "ctrl_mean": float(ctrls.mean()),
+            "mean_diff": float(cases.mean() - ctrls.mean()),
+            "p_value": round(float(p), 4),
+            "significant": bool(p < alpha),
+        })
+
+    return (
+        pd.DataFrame(records)
+        .sort_values("p_value")
+        .reset_index(drop=True)
+    )

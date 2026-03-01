@@ -135,6 +135,8 @@ def harbinger(
           motif_window       — (start, end) timepoint tuple of the best motif
           enrichment_score   — mean(case values) − mean(ctrl values) in window
           p_value            — fraction of permutations with score ≥ observed
+          q_value            — Benjamini-Hochberg FDR-adjusted p-value across
+                               all features tested (computed before top_k filter)
           matrix_profile_min — minimum pan-matrix-profile value (motif strength)
         Sorted by enrichment_score descending, at most top_k rows.
 
@@ -237,11 +239,15 @@ def harbinger(
     if not records:
         return pd.DataFrame(
             columns=["feature", "window_size", "motif_window", "enrichment_score",
-                     "p_value", "matrix_profile_min"]
+                     "p_value", "q_value", "matrix_profile_min"]
         )
 
+    out = pd.DataFrame(records)
+    out["q_value"] = _bh_correct(out["p_value"].values)
+    out["q_value"] = out["q_value"].round(4)
+
     return (
-        pd.DataFrame(records)
+        out
         .sort_values("enrichment_score", ascending=False)
         .reset_index(drop=True)
         .head(top_k)
@@ -319,3 +325,31 @@ def _window_enrichment(
     case_mean = wide.loc[case_subj, window_tps].values.mean() if case_subj else 0.0
     ctrl_mean = wide.loc[ctrl_subj, window_tps].values.mean() if ctrl_subj else 0.0
     return float(case_mean - ctrl_mean)
+
+
+def _bh_correct(p_values: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR correction.
+
+    Parameters
+    ----------
+    p_values : np.ndarray
+        1D array of raw p-values.
+
+    Returns
+    -------
+    np.ndarray
+        FDR-adjusted q-values, clipped to [0, 1].
+    """
+    n = len(p_values)
+    if n == 0:
+        return np.array([])
+    order = np.argsort(p_values)
+    ranks = np.empty(n)
+    ranks[order] = np.arange(1, n + 1)
+    q = p_values * n / ranks
+    # Enforce monotonicity from largest rank downward
+    q_sorted = q[order]
+    for i in range(n - 2, -1, -1):
+        q_sorted[i] = min(q_sorted[i], q_sorted[i + 1])
+    q[order] = q_sorted
+    return np.clip(q, 0.0, 1.0)
