@@ -585,6 +585,105 @@ plt.tight_layout()
 plt.show()\
 """),
 
+# ── 9  Non-compositional data ─────────────────────────────────────────────────
+md("""\
+---
+## 9  Non-Compositional Data
+
+All previous sections used compositional measurements — values that sum to 1 at
+each timepoint. TEMPO works equally well on non-compositional data such as:
+
+- **Flow cytometry** — MFI (Median Fluorescence Intensity) values, cell counts,
+  or percentage-positive readouts from a surface marker panel
+- **Cytokine concentrations** — absolute or relative protein levels from a
+  multiplex assay (Luminex, Olink, ELISA)
+- **Gene expression** — log2-normalized RNA-seq counts or microarray intensities
+- **Clinical lab measurements** — haematology, metabolic panels, vital signs
+
+For these data types, CLR transformation is neither necessary nor appropriate.
+Pass your data directly to `harbinger()` with no preprocessing. The matrix
+profile z-normalises each window internally, so the absolute scale and baseline
+level of your measurements do not affect motif detection.
+
+The only preprocessing you might consider for non-compositional data is
+**z-score normalization per feature** (subtract the feature mean across all
+subjects and timepoints, divide by the standard deviation) when features are on
+very different scales and you want the enrichment score to be interpretable in
+common units. But this is optional — harbinger works correctly on raw values.
+
+The example below generates a simulated dataset representing 10 immune markers
+measured over 12 timepoints in 40 subjects. Three markers carry a step-change
+motif in cases between timepoints 3 and 8 (e.g. a sustained post-perturbation
+elevation). The workflow is identical to the compositional case, minus the CLR
+step and the baseline check note.
+\
+"""),
+
+code("""\
+# ── Simulate non-compositional data ──────────────────────────────────────────
+# Framing: 10 immune markers (e.g. MFI from a cytometry panel)
+# measured over 12 timepoints post-perturbation in 40 subjects.
+df_nc = simulate.simulate_continuous(
+    n_subjects=40, n_timepoints=12, n_features=10, n_cases=15,
+    motif_features=[0, 1, 2],   # markers 0-2 carry the signal
+    motif_window=(3, 8),         # signal present at timepoints 3-8
+    motif_type='step',           # sustained elevation (not a spike)
+    motif_strength=2.5,          # effect size in raw units
+    noise_sd=0.5,
+    baseline_mean=0.0,
+    seed=42,
+)
+
+print(f"Shape           : {df_nc.shape}")
+print(f"Value range     : [{df_nc['value'].min():.2f}, {df_nc['value'].max():.2f}]")
+print(f"Sums to 1?      : No — values are unbounded (non-compositional)")
+print(f"Subjects        : {df_nc['subject_id'].nunique()} "
+      f"({(df_nc['outcome']==1).groupby(df_nc['subject_id']).first().sum()} cases)")
+print()
+print("No CLR or other transformation needed — passing raw values to harbinger().")\
+"""),
+
+code("""\
+# ── Run Harbinger on raw non-compositional data ───────────────────────────────
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore')
+    results_nc = tempo.harbinger(
+        df_nc, window_size_range=(3, 6), top_k=10, n_permutations=999, seed=42
+    )
+
+print("Harbinger results (non-compositional data):")
+print(results_nc[['feature', 'window_size', 'motif_window',
+                   'enrichment_score', 'p_value', 'q_value']].to_string(index=False))
+print()
+
+sig_nc = results_nc[results_nc['q_value'] < 0.05]['feature'].tolist()
+top_win_nc = results_nc.iloc[0]['motif_window']
+rep_nc = simulate.evaluation_report(sig_nc, top_win_nc, df_nc)
+print(f"Significant features (q < 0.05) : {sig_nc}")
+print(f"Detected window                 : {top_win_nc}  (true: (3, 8))")
+print(f"Feature recall={rep_nc['feature_recall']:.3f}  "
+      f"precision={rep_nc['feature_precision']:.3f}  "
+      f"window Jaccard={rep_nc['window_jaccard']:.3f}")\
+"""),
+
+code("""\
+# ── Visualise motifs (raw values — no CLR needed) ─────────────────────────────
+fig = tempo.plot_motifs(
+    df_nc,
+    features=results_nc['feature'].head(4).tolist(),
+    motif_window=top_win_nc,
+)
+fig.suptitle('Non-compositional data: top 4 features by enrichment score',
+             fontsize=11, y=1.01)
+plt.show()
+
+fig = tempo.plot_enrichment(results_nc, top_k=10)
+fig.suptitle('Enrichment summary — non-compositional (immune marker) data',
+             fontsize=11, y=1.01)
+plt.show()\
+"""),
+
 ]  # end nb.cells
 
 nbformat.write(nb, 'vignette.ipynb')

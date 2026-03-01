@@ -90,6 +90,7 @@ For a full walkthrough with biological context and interpretation guidance, see 
 | 6 Enrichment summary | `plot_enrichment` — scores and p-values |
 | 7 Permutation test | Fixed-window confirmatory testing |
 | 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
+| 9 Non-compositional data | Full workflow for flow cytometry / expression / clinical data (no CLR) |
 
 Each section includes prose explaining the biological and statistical reasoning.
 The notebook is pre-executed — visualizations are visible directly on GitHub
