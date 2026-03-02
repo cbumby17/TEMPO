@@ -106,7 +106,7 @@ class TestSimulateContinuous:
         assert len(df) == 10 * 8 * 5
 
     def test_motif_types(self):
-        for motif_type in ["step", "ramp", "pulse"]:
+        for motif_type in ["step", "ramp", "pulse", "oscillating"]:
             df = simulate.simulate_continuous(motif_type=motif_type, seed=0)
             assert len(df) > 0
 
@@ -134,6 +134,43 @@ class TestSimulateContinuous:
     def test_columns_present(self):
         df = simulate.simulate_continuous(seed=0)
         assert set(["subject_id", "timepoint", "feature", "value", "outcome"]).issubset(df.columns)
+
+
+# ---------------------------------------------------------------------------
+# Test oscillating motif
+# ---------------------------------------------------------------------------
+
+class TestOscillatingMotif:
+
+    def test_no_raise_for_oscillating(self):
+        """simulate_continuous should accept motif_type='oscillating' without error."""
+        df = simulate.simulate_continuous(motif_type="oscillating", seed=0)
+        assert len(df) > 0
+
+    def test_signal_alternates_in_window(self):
+        """Motif signal should alternate +/- in the motif window for cases."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("oscillating", (2, 5), 10, strength=3.0)
+        window_vals = signal[2:6]
+        expected = [3.0, -3.0, 3.0, -3.0]
+        np.testing.assert_array_almost_equal(window_vals, expected)
+
+    def test_zero_outside_window(self):
+        """Signal should be zero outside the motif window."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("oscillating", (3, 5), 10, strength=2.0)
+        assert np.all(signal[:3] == 0.0)
+        assert np.all(signal[6:] == 0.0)
+
+    def test_invalid_type_still_raises(self):
+        """Unknown motif types should still raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown motif_type"):
+            simulate.simulate_continuous(motif_type="triangle", seed=0)
+
+    def test_oscillating_in_motif_types_error_message(self):
+        """The error message for invalid types should mention 'oscillating'."""
+        with pytest.raises(ValueError, match="oscillating"):
+            simulate.simulate_continuous(motif_type="bad_type", seed=0)
 
 
 # ---------------------------------------------------------------------------

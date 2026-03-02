@@ -143,6 +143,13 @@ def enrichment_score(
             cases cluster at the top of the ranking, analogous to
             gene-set enrichment analysis applied to subjects.
 
+        "template_correlation"
+            Each subject is scored by their Pearson correlation to the mean
+            case trajectory (the "template") in the motif window. The
+            enrichment score is mean(case correlations) − mean(ctrl
+            correlations). Captures shape, direction, and oscillation —
+            patterns that are invisible to mean_difference. Range: [−2, 2].
+
     Returns
     -------
     float
@@ -151,7 +158,8 @@ def enrichment_score(
     Raises
     ------
     ValueError
-        If method is not one of "mean_difference", "auc", "gsea".
+        If method is not one of "mean_difference", "auc", "gsea",
+        "template_correlation".
     """
     subject_scores = _subject_window_scores(df, feature, motif_window, outcome_col)
     scores = subject_scores["score"].values
@@ -196,10 +204,49 @@ def enrichment_score(
 
         return float(max_running)
 
+    elif method == "template_correlation":
+        # Build subjects × timepoints matrix for the motif window.
+        feat_df = df[df["feature"] == feature]
+        window_df = feat_df[
+            feat_df["timepoint"].between(motif_window[0], motif_window[1])
+        ]
+        wide = (
+            window_df.pivot(index="subject_id", columns="timepoint", values="value")
+            .reindex(sorted(window_df["timepoint"].unique()), axis=1)
+        )
+        if wide.shape[1] < 2:
+            return 0.0
+
+        outcome_map = window_df.groupby("subject_id")[outcome_col].first()
+        case_subj = outcome_map[outcome_map == 1].index.tolist()
+        ctrl_subj = outcome_map[outcome_map == 0].index.tolist()
+
+        if not case_subj:
+            return 0.0
+
+        case_vals = wide.loc[case_subj].values.astype(float)
+        template = case_vals.mean(axis=0)
+        if template.std() < 1e-8:
+            return 0.0
+
+        def _r(row):
+            if row.std() < 1e-8:
+                return 0.0
+            c = float(np.corrcoef(row, template)[0, 1])
+            return 0.0 if np.isnan(c) else c
+
+        case_corrs = np.array([_r(case_vals[i]) for i in range(len(case_subj))])
+        if ctrl_subj:
+            ctrl_vals = wide.loc[ctrl_subj].values.astype(float)
+            ctrl_corrs = np.array([_r(ctrl_vals[i]) for i in range(len(ctrl_subj))])
+        else:
+            ctrl_corrs = np.zeros(1)
+        return float(case_corrs.mean() - ctrl_corrs.mean())
+
     else:
         raise ValueError(
             f"Unknown method '{method}'. "
-            "Choose from: 'mean_difference', 'auc', 'gsea'."
+            "Choose from: 'mean_difference', 'auc', 'gsea', 'template_correlation'."
         )
 
 

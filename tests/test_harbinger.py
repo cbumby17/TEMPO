@@ -378,3 +378,148 @@ class TestMultiWindowScanning:
         r1 = harbinger(df_multi, window_size=3, top_k=4, n_permutations=100, seed=5)
         r2 = harbinger(df_multi, window_sizes=[3], top_k=4, n_permutations=100, seed=5)
         pd.testing.assert_frame_equal(r1, r2)
+
+
+# ---------------------------------------------------------------------------
+# Template-correlation enrichment
+# ---------------------------------------------------------------------------
+
+class TestTemplateCorrelationEnrichment:
+
+    @pytest.fixture
+    def df_step(self):
+        """Strong step motif — both methods should recover it."""
+        return simulate.simulate_continuous(
+            n_subjects=30, n_timepoints=12, n_features=6, n_cases=12,
+            motif_features=[0, 1], motif_window=(3, 6),
+            motif_type="step", motif_strength=8.0, noise_sd=0.3,
+            seed=42,
+        )
+
+    @pytest.fixture
+    def df_oscillating(self):
+        """Oscillating motif — mean_difference may fail, template_correlation should succeed."""
+        return simulate.simulate_continuous(
+            n_subjects=30, n_timepoints=12, n_features=6, n_cases=12,
+            motif_features=[0, 1], motif_window=(3, 6),
+            motif_type="oscillating", motif_strength=8.0, noise_sd=0.3,
+            seed=42,
+        )
+
+    @pytest.fixture
+    def df_small(self):
+        return simulate.simulate_continuous(
+            n_subjects=10, n_timepoints=8, n_features=4, n_cases=4,
+            motif_features=[0], motif_window=(2, 5),
+            motif_type="step", motif_strength=5.0, noise_sd=0.3,
+            seed=0,
+        )
+
+    def test_same_output_schema_as_mean_difference(self, df_small):
+        """template_correlation returns a DataFrame with the same columns."""
+        result = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=0,
+            enrichment_method="template_correlation",
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert set(result.columns) == {
+            "feature", "window_size", "motif_window", "enrichment_score",
+            "p_value", "q_value", "matrix_profile_min",
+        }
+
+    def test_motif_features_rank_top_on_step_data(self, df_step):
+        """On strong step data both methods should put motif features in top 2."""
+        result = harbinger(
+            df_step, window_size=4, top_k=6, n_permutations=200, seed=0,
+            enrichment_method="template_correlation",
+        )
+        top2 = set(result.head(2)["feature"].tolist())
+        assert "feature_000" in top2
+        assert "feature_001" in top2
+
+    def test_p_values_significant_for_step_motif(self, df_step):
+        """Motif features should have p < 0.05 on strong step data."""
+        result = harbinger(
+            df_step, window_size=4, top_k=6, n_permutations=200, seed=0,
+            enrichment_method="template_correlation",
+        )
+        motif_rows = result[result["feature"].isin(["feature_000", "feature_001"])]
+        assert (motif_rows["p_value"] < 0.05).all()
+
+    def test_enrichment_score_range(self, df_small):
+        """Template-correlation enrichment score must lie in [−2, 2]."""
+        result = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=0,
+            enrichment_method="template_correlation",
+        )
+        assert (result["enrichment_score"] >= -2.0).all()
+        assert (result["enrichment_score"] <= 2.0).all()
+
+    def test_default_method_matches_mean_difference(self, df_small):
+        """Calling harbinger() without enrichment_method should match explicit 'mean_difference'."""
+        r_default = harbinger(df_small, window_size=3, top_k=4, n_permutations=100, seed=7)
+        r_explicit = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=100, seed=7,
+            enrichment_method="mean_difference",
+        )
+        pd.testing.assert_frame_equal(r_default, r_explicit)
+
+    def test_invalid_method_raises(self, df_small):
+        """An unknown enrichment_method should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown enrichment_method"):
+            harbinger(
+                df_small, window_size=3, n_permutations=10,
+                enrichment_method="bad_method",
+            )
+
+    def test_reproducibility_with_same_seed(self, df_small):
+        """Same seed → identical results."""
+        r1 = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=13,
+            enrichment_method="template_correlation",
+        )
+        r2 = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=13,
+            enrichment_method="template_correlation",
+        )
+        pd.testing.assert_frame_equal(r1, r2)
+
+    def test_works_with_window_sizes_list(self, df_small):
+        """template_correlation should work via the multi-candidate code path."""
+        result = harbinger(
+            df_small, window_sizes=[3, 5], top_k=4, n_permutations=50, seed=0,
+            enrichment_method="template_correlation",
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_p_values_in_unit_interval(self, df_small):
+        result = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=0,
+            enrichment_method="template_correlation",
+        )
+        assert (result["p_value"] >= 0).all()
+        assert (result["p_value"] <= 1).all()
+
+    def test_sorted_by_enrichment_descending(self, df_small):
+        result = harbinger(
+            df_small, window_size=3, top_k=4, n_permutations=50, seed=0,
+            enrichment_method="template_correlation",
+        )
+        scores = result["enrichment_score"].tolist()
+        assert scores == sorted(scores, reverse=True)
+
+    def test_near_zero_template_variance_returns_zero(self):
+        """If all case values in window are identical, score should be 0.0 without crash."""
+        from tempo.harbinger import _window_enrichment_template_corr
+        import pandas as pd
+        # Build a wide DataFrame where all cases have the same constant trajectory
+        wide = pd.DataFrame({
+            0: [1.0, 1.0, 1.0, 0.5, 0.6],  # cases: same value
+            1: [1.0, 1.0, 1.0, 0.4, 0.7],
+            2: [1.0, 1.0, 1.0, 0.3, 0.8],
+        }, index=["case_0", "case_1", "case_2", "ctrl_0", "ctrl_1"])
+        score = _window_enrichment_template_corr(
+            wide, ["case_0", "case_1", "case_2"], ["ctrl_0", "ctrl_1"], [0, 1, 2]
+        )
+        assert score == 0.0

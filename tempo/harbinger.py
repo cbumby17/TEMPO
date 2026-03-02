@@ -83,6 +83,7 @@ def harbinger(
     outcome_col: str = "outcome",
     n_permutations: int = 1000,
     seed: Optional[int] = 42,
+    enrichment_method: str = "mean_difference",
 ) -> pd.DataFrame:
     """
     Run Harbinger analysis on a longitudinal dataframe.
@@ -128,6 +129,17 @@ def harbinger(
         Number of label-permutation iterations for p-value estimation.
     seed : int, optional
         Random seed for reproducibility of permutation tests.
+    enrichment_method : str
+        Method used to score case/control separation in the motif window.
+
+        "mean_difference" (default)
+            mean(case values) − mean(ctrl values). Simple and interpretable.
+
+        "template_correlation"
+            Each subject is scored by their Pearson correlation to the mean
+            case trajectory (the "template"). The enrichment score is
+            mean(case correlations) − mean(ctrl correlations). Captures shape,
+            direction, and oscillation — patterns missed by mean_difference.
 
     Returns
     -------
@@ -204,6 +216,8 @@ def harbinger(
 
         T_case = wide.loc[case_subj].values.astype(float)
 
+        enrich_fn = _make_enrichment_fn(enrichment_method)
+
         # Scan all candidate sizes; pick best by enrichment score.
         # Also collect every valid (ws, window_tps) pair for the permutation
         # test — needed to correct for the selection bias introduced when
@@ -222,7 +236,7 @@ def harbinger(
                 continue
             motif_idx = int(np.nanargmin(pan_mp))
             window_tps = timepoints[motif_idx: motif_idx + ws]
-            score = _window_enrichment(wide, case_subj, ctrl_subj, window_tps)
+            score = enrich_fn(wide, case_subj, ctrl_subj, window_tps)
             candidate_windows.append((ws, window_tps))
             if score > best_score:
                 best_score = score
@@ -245,7 +259,7 @@ def harbinger(
         if len(candidate_windows) == 1:
             for i in range(n_permutations):
                 perm = rng.permutation(all_subj)
-                perm_scores[i] = _window_enrichment(
+                perm_scores[i] = enrich_fn(
                     wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), best_window_tps
                 )
         else:
@@ -254,7 +268,7 @@ def harbinger(
                 perm_case = perm[:n_cases].tolist()
                 perm_ctrl = perm[n_cases:].tolist()
                 perm_scores[i] = max(
-                    _window_enrichment(wide, perm_case, perm_ctrl, win_tps)
+                    enrich_fn(wide, perm_case, perm_ctrl, win_tps)
                     for _, win_tps in candidate_windows
                 )
 
@@ -360,6 +374,52 @@ def _window_enrichment(
     case_mean = wide.loc[case_subj, window_tps].values.mean() if case_subj else 0.0
     ctrl_mean = wide.loc[ctrl_subj, window_tps].values.mean() if ctrl_subj else 0.0
     return float(case_mean - ctrl_mean)
+
+
+def _window_enrichment_template_corr(
+    wide: pd.DataFrame,
+    case_subj: list,
+    ctrl_subj: list,
+    window_tps: list,
+) -> float:
+    """Template-correlation enrichment: mean(case Pearson r) − mean(ctrl Pearson r).
+
+    Template = mean case trajectory in window. Called fresh per permutation iteration
+    so the template is always recomputed from the current (permuted) case group —
+    this prevents bias in the null distribution.
+    """
+    if not case_subj:
+        return 0.0
+    case_vals = wide.loc[case_subj, window_tps].values.astype(float)
+    template = case_vals.mean(axis=0)
+    if template.std() < 1e-8:
+        return 0.0
+
+    def _r(row):
+        if row.std() < 1e-8:
+            return 0.0
+        c = np.corrcoef(row, template)[0, 1]
+        return float(0.0 if np.isnan(c) else c)
+
+    case_corrs = np.array([_r(case_vals[i]) for i in range(len(case_subj))])
+    ctrl_corrs = np.zeros(1)
+    if ctrl_subj:
+        ctrl_vals = wide.loc[ctrl_subj, window_tps].values.astype(float)
+        ctrl_corrs = np.array([_r(ctrl_vals[i]) for i in range(len(ctrl_subj))])
+    return float(case_corrs.mean() - ctrl_corrs.mean())
+
+
+def _make_enrichment_fn(method: str):
+    """Return the appropriate per-window enrichment function for the given method."""
+    if method == "mean_difference":
+        return _window_enrichment
+    elif method == "template_correlation":
+        return _window_enrichment_template_corr
+    else:
+        raise ValueError(
+            f"Unknown enrichment_method '{method}'. "
+            "Choose from: 'mean_difference', 'template_correlation'."
+        )
 
 
 def _bh_correct(p_values: np.ndarray) -> np.ndarray:

@@ -183,9 +183,10 @@ def simulate_continuous(
     ----------
     motif_type : str
         Shape of the embedded motif:
-        "step"  → sustained increase during motif window (e.g., activation)
-        "ramp"  → linear increase during motif window (e.g., gradual expansion)
-        "pulse" → transient spike at motif window midpoint (e.g., acute response)
+        "step"        → sustained increase during motif window (e.g., activation)
+        "ramp"        → linear increase during motif window (e.g., gradual expansion)
+        "pulse"       → transient spike at motif window midpoint (e.g., acute response)
+        "oscillating" → alternating +strength / −strength pattern (e.g., oscillatory response)
     motif_strength : float
         Amplitude of the motif signal in units of noise_sd.
     baseline_mean : float
@@ -350,8 +351,16 @@ def _build_motif_signal(motif_type, motif_window, n_timepoints, strength):
         if mid + 1 <= end:
             signal[mid + 1] = strength * 0.5
 
+    elif motif_type == "oscillating":
+        window_len = end - start + 1
+        signal[start:end + 1] = [
+            strength if i % 2 == 0 else -strength for i in range(window_len)
+        ]
+
     else:
-        raise ValueError(f"Unknown motif_type '{motif_type}'. Choose from: step, ramp, pulse.")
+        raise ValueError(
+            f"Unknown motif_type '{motif_type}'. Choose from: step, ramp, pulse, oscillating."
+        )
 
     return signal
 

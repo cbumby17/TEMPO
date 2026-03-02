@@ -88,8 +88,40 @@ class TestEnrichmentScore:
         with pytest.raises(ValueError, match="Unknown method"):
             enrichment_score(df_cont, "feature_000", (3, 7), method="bad")
 
+
+# ---------------------------------------------------------------------------
+# enrichment_score — template_correlation method
+# ---------------------------------------------------------------------------
+
+class TestEnrichmentScoreTemplateCorr:
+
+    def test_motif_feature_scores_positive(self, df_cont):
+        """Motif feature should have a positive template_correlation score."""
+        s = enrichment_score(df_cont, "feature_000", (3, 7), method="template_correlation")
+        assert s > 0, f"Expected positive template_correlation for motif feature, got {s}"
+
     def test_returns_float(self, df_cont):
-        for method in ["mean_difference", "auc", "gsea"]:
+        s = enrichment_score(df_cont, "feature_000", (3, 7), method="template_correlation")
+        assert isinstance(s, float)
+
+    def test_score_in_valid_range(self, df_cont):
+        """template_correlation score must lie in [−2, 2]."""
+        for feat in ["feature_000", "feature_004"]:
+            s = enrichment_score(df_cont, feat, (3, 7), method="template_correlation")
+            assert -2.0 <= s <= 2.0, f"Score out of range for {feat}: {s}"
+
+    def test_motif_greater_than_noise(self, df_cont):
+        """Motif feature should score higher than a noise feature."""
+        motif = enrichment_score(df_cont, "feature_000", (3, 7), method="template_correlation")
+        noise = enrichment_score(df_cont, "feature_004", (3, 7), method="template_correlation")
+        assert motif > noise
+
+    def test_invalid_method_raises(self, df_cont):
+        with pytest.raises(ValueError, match="Unknown method"):
+            enrichment_score(df_cont, "feature_000", (3, 7), method="template_corr")
+
+    def test_returns_float(self, df_cont):
+        for method in ["mean_difference", "auc", "gsea", "template_correlation"]:
             result = enrichment_score(df_cont, "feature_000", (3, 7), method=method)
             assert isinstance(result, float)
 
