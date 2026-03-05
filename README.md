@@ -18,12 +18,15 @@ It works on any feature set that can be measured repeatedly over time: immune ce
 ## Key Features
 
 - **Flexible input**: accepts longitudinal data in long format for any biological feature (cell populations, proteins, metabolites, gene transcripts)
-- **Compositional-aware preprocessing**: Bray-Curtis trajectory distances, CLR transformation, zero-robust normalization
+- **Compositionally-aware preprocessing**: Bray-Curtis trajectory distances, CLR transformation, zero-robust normalization
 - **Harbinger analysis**: matrix profile-based motif discovery via [STUMPY](https://stumpy.readthedocs.io/)
+- **Four enrichment methods**: `mean_difference`, `auc`, `gsea`, and `template_correlation` (shape-aware, calibrated via leave-one-out scoring)
+- **Bidirectional enrichment**: `direction='up'`, `'down'`, or `'both'` — surfaces features where cases are elevated, depressed, or either relative to controls
 - **Three statistical testing frameworks**:
   - Permutation-based motif enrichment (general purpose)
   - Harbinger enrichment scoring (GSEA-style, for ranked outcomes)
   - Survival-integrated testing (time-to-event outcomes)
+- **Resistance and resilience metrics**: `compute_resistance()`, `compute_resilience()`, and `compare_recovery()` characterise how subjects respond to and recover from a perturbation as per-subject scalars, compatible with all enrichment and permutation testing workflows
 - **Dimensionality reduction hooks**: accepts raw features or pre-reduced representations (PCA, PCoA)
 - **Visualization**: trajectory plots with motif highlighting, enrichment heatmaps
 
@@ -91,8 +94,9 @@ For a full walkthrough with biological context and interpretation guidance, see 
 | 7 Permutation test | Fixed-window confirmatory testing |
 | 8 Evaluate | Feature recall, precision, window Jaccard vs ground truth |
 | 9 Non-compositional data | Full workflow for flow cytometry / expression / clinical data (no CLR) |
-| 10 Continuous outcomes | Binarize at median, compare `mean_difference` / `auc` / `gsea` scoring methods |
+| 10 Continuous outcomes | Binarize at median; compare all four enrichment methods including `template_correlation`; `direction='down'` and `'both'` |
 | 11 Survival analysis | `survival_test()` log-rank and Cox PH, `plot_survival()` KM curves |
+| 12 Resistance & resilience | `compute_resistance()`, `compute_resilience()`, `compare_recovery()`, `plot_resistance_resilience()` — pulse motif types and recovery dynamics |
 
 Each section includes prose explaining the biological and statistical reasoning.
 The notebook is pre-executed — visualizations are visible directly on GitHub

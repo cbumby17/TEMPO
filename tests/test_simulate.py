@@ -106,7 +106,8 @@ class TestSimulateContinuous:
         assert len(df) == 10 * 8 * 5
 
     def test_motif_types(self):
-        for motif_type in ["step", "ramp", "pulse", "oscillating"]:
+        for motif_type in ["step", "ramp", "pulse", "oscillating",
+                           "pulse_decay", "pulse_plateau", "pulse_underdamped"]:
             df = simulate.simulate_continuous(motif_type=motif_type, seed=0)
             assert len(df) > 0
 
@@ -171,6 +172,68 @@ class TestOscillatingMotif:
         """The error message for invalid types should mention 'oscillating'."""
         with pytest.raises(ValueError, match="oscillating"):
             simulate.simulate_continuous(motif_type="bad_type", seed=0)
+
+
+# ---------------------------------------------------------------------------
+# Test new recovery motif types (issue #16)
+# ---------------------------------------------------------------------------
+
+class TestRecoveryMotifTypes:
+
+    def test_pulse_decay_peak_at_start(self):
+        """pulse_decay should have highest signal at the window start."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_decay", (2, 7), 10, strength=4.0)
+        window_vals = signal[2:8]
+        assert signal[2] == pytest.approx(4.0, abs=1e-6), "Peak should be at window start"
+        assert window_vals[-1] < window_vals[0], "Signal should decay across window"
+
+    def test_pulse_decay_zero_outside_window(self):
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_decay", (3, 7), 12, strength=3.0)
+        assert np.all(signal[:3] == 0.0)
+        assert np.all(signal[8:] == 0.0)
+
+    def test_pulse_plateau_sustained_after_spike(self):
+        """pulse_plateau should have peak at start then plateau at ~70% peak."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_plateau", (2, 6), 10, strength=4.0)
+        assert signal[2] == pytest.approx(4.0, abs=1e-6)
+        # Plateau values should be uniform at 70% of strength
+        plateau_vals = signal[3:7]
+        assert np.allclose(plateau_vals, 4.0 * 0.7, atol=1e-6)
+
+    def test_pulse_plateau_zero_outside_window(self):
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_plateau", (3, 7), 12, strength=3.0)
+        assert np.all(signal[:3] == 0.0)
+        assert np.all(signal[8:] == 0.0)
+
+    def test_pulse_underdamped_peak_at_start(self):
+        """pulse_underdamped should start at strength (cos(0)=1) and decay."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_underdamped", (2, 7), 10, strength=4.0)
+        assert signal[2] == pytest.approx(4.0, abs=1e-6)
+        assert signal[8:].tolist() == [0.0] * len(signal[8:])
+
+    def test_pulse_underdamped_oscillates(self):
+        """pulse_underdamped should have at least one sign change in the window."""
+        from tempo.simulate import _build_motif_signal
+        signal = _build_motif_signal("pulse_underdamped", (0, 9), 10, strength=2.0)
+        has_positive = np.any(signal > 0)
+        has_negative = np.any(signal < 0)
+        assert has_positive and has_negative, "Underdamped signal should oscillate"
+
+    def test_cases_elevated_at_onset_for_pulse_decay(self):
+        """Cases should be elevated relative to controls at perturbation onset."""
+        df = simulate.simulate_continuous(
+            n_subjects=30, n_timepoints=12, n_features=3, n_cases=15,
+            motif_features=[0], motif_window=(3, 10),
+            motif_type="pulse_decay", motif_strength=5.0, noise_sd=0.3,
+            seed=42,
+        )
+        onset = df[(df["feature"] == "feature_000") & (df["timepoint"] == 3)]
+        assert onset[onset["outcome"] == 1]["value"].mean() > onset[onset["outcome"] == 0]["value"].mean()
 
 
 # ---------------------------------------------------------------------------

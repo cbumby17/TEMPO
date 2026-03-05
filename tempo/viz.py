@@ -372,6 +372,161 @@ def plot_survival(
     return fig
 
 
+def plot_resistance_resilience(
+    df: pd.DataFrame,
+    feature: str,
+    perturbation_tp: int,
+    baseline_window: Optional[tuple] = None,
+    recovery_threshold: float = 0.2,
+    outcome_col: str = "outcome",
+    figsize: tuple = (14, 5),
+) -> plt.Figure:
+    """
+    Three-panel figure summarising resistance and resilience for one feature.
+
+    Panel 1 — Trajectory plot (group mean ± SD) with the pre-perturbation
+               baseline region shaded in light grey and a vertical dashed line
+               at perturbation_tp marking the onset of the disturbance.
+
+    Panel 2 — Strip plot of per-subject resistance scores (signed peak
+               deflection from baseline) separated by outcome group.
+
+    Panel 3 — Strip plot of per-subject time-to-recovery (timepoint steps
+               from peak deflection to return within the recovery band).
+               Subjects that never recover are plotted as open markers at
+               the maximum observed value + 0.5 for visibility.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with columns: subject_id, timepoint, feature,
+        value, outcome (or the column named by outcome_col).
+    feature : str
+        Feature to visualise.
+    perturbation_tp : int
+        Timepoint of perturbation onset.
+    baseline_window : tuple of (int, int), optional
+        Pre-perturbation baseline window for shading. Defaults to all
+        timepoints strictly before perturbation_tp.
+    recovery_threshold : float
+        Recovery threshold passed to compute_resilience(). Default 0.2.
+    outcome_col : str
+        Column containing binary outcome labels (1 = case, 0 = control).
+    figsize : tuple
+        (width, height) in inches.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from tempo.stats import compute_resistance, compute_resilience
+
+    feat_df = df[df["feature"] == feature]
+    timepoints = sorted(feat_df["timepoint"].unique())
+
+    if baseline_window is None:
+        bl_start = timepoints[0]
+        bl_end_tp = max((t for t in timepoints if t < perturbation_tp), default=timepoints[0])
+    else:
+        bl_start, bl_end_tp = baseline_window
+
+    res_df = compute_resistance(df, feature, perturbation_tp, baseline_window, outcome_col)
+    sil_df = compute_resilience(df, feature, perturbation_tp, baseline_window,
+                                recovery_threshold, outcome_col)
+
+    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=figsize)
+
+    # ── Panel 1: Trajectories ─────────────────────────────────────────────────
+    has_outcome = outcome_col in feat_df.columns
+    for _, grp in feat_df.groupby("subject_id"):
+        if has_outcome:
+            outcome = grp[outcome_col].iloc[0]
+            color = _CASE_COLOR if outcome == 1 else _CTRL_COLOR
+            alpha = 0.35 if outcome == 1 else 0.2
+        else:
+            color, alpha = "#888888", 0.25
+        ax0.plot(grp["timepoint"], grp["value"], color=color, alpha=alpha, lw=0.9, zorder=2)
+
+    if has_outcome:
+        for outcome, color in [(1, _CASE_COLOR), (0, _CTRL_COLOR)]:
+            grp_agg = feat_df[feat_df[outcome_col] == outcome].groupby("timepoint")["value"]
+            means = grp_agg.mean()
+            spread = grp_agg.std()
+            ax0.plot(means.index, means.values, color=color, lw=2.5, zorder=4)
+            ax0.fill_between(means.index, means - spread, means + spread,
+                             color=color, alpha=0.25, zorder=3)
+
+    # Shade baseline region and mark perturbation onset
+    ax0.axvspan(bl_start, bl_end_tp, alpha=0.12, color="grey", zorder=1, label="Baseline")
+    ax0.axvline(perturbation_tp, color="black", lw=1.5, ls="--", zorder=5,
+                label=f"Perturbation (t={perturbation_tp})")
+    ax0.set_title(f"{feature}\nTrajectories")
+    ax0.set_xlabel("Timepoint")
+    ax0.set_ylabel("Value")
+    ax0.set_xticks(timepoints)
+
+    legend_handles = [mpatches.Patch(color="grey", alpha=0.3, label="Baseline")]
+    if has_outcome:
+        legend_handles += [
+            mpatches.Patch(color=_CASE_COLOR, alpha=0.75, label="Cases"),
+            mpatches.Patch(color=_CTRL_COLOR, alpha=0.75, label="Controls"),
+        ]
+    ax0.legend(handles=legend_handles, fontsize=8)
+
+    # ── Panel 2: Resistance (strip plot) ─────────────────────────────────────
+    rng_jitter = np.random.default_rng(0)
+
+    def _strip(ax, data_df, y_col, title, ylabel, inf_handling=False):
+        groups = [(1, "Cases", _CASE_COLOR), (0, "Controls", _CTRL_COLOR)]
+        x_tick_labels = []
+        for xi, (outcome_val, label, color) in enumerate(groups):
+            grp = data_df[data_df[outcome_col] == outcome_val]
+            if inf_handling:
+                finite = grp[grp[y_col] != float("inf")]
+                inf_subj = grp[grp[y_col] == float("inf")]
+            else:
+                finite = grp
+                inf_subj = pd.DataFrame()
+
+            ys = finite[y_col].values
+            jitter = rng_jitter.uniform(-0.15, 0.15, len(ys))
+            ax.scatter(xi + jitter, ys, color=color, alpha=0.7, s=30, zorder=3)
+
+            if len(ys) > 0:
+                ax.plot([xi - 0.25, xi + 0.25], [np.mean(ys)] * 2,
+                        color="black", lw=2.0, zorder=4)
+
+            if len(inf_subj) > 0 and inf_handling:
+                max_y = max(data_df.loc[data_df[y_col] != float("inf"), y_col].max(), 1.0)
+                marker_y = max_y + 0.5
+                jitter_inf = rng_jitter.uniform(-0.15, 0.15, len(inf_subj))
+                ax.scatter(xi + jitter_inf, [marker_y] * len(inf_subj),
+                           color=color, alpha=0.5, s=40, marker="^", zorder=3,
+                           label=f"Not recovered (n={len(inf_subj)})")
+
+            x_tick_labels.append(f"{label}\n(n={len(grp)})")
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(x_tick_labels)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.axhline(0, color="grey", lw=0.8, ls="--")
+
+    _strip(ax1, res_df, "resistance", "Resistance\n(peak deflection from baseline)",
+           "Peak deflection (value − baseline)")
+    _strip(ax2, sil_df, "time_to_recovery", "Resilience\n(time to recovery)",
+           "Timepoint steps from peak to recovery", inf_handling=True)
+
+    # Show "not recovered" legend on Panel 3 if any subjects didn't recover
+    n_inf = int((sil_df["time_to_recovery"] == float("inf")).sum())
+    if n_inf > 0:
+        ax2.legend(fontsize=8)
+
+    fig.suptitle(f"Resistance & Resilience — {feature}", fontsize=11, y=1.01)
+    fig.tight_layout()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

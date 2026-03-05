@@ -25,6 +25,7 @@ approach corrects the anti-conservative bias that arises from picking the
 best window size by looking at the data.
 """
 
+import warnings
 import numpy as np
 import pandas as pd
 import stumpy
@@ -84,6 +85,8 @@ def harbinger(
     n_permutations: int = 1000,
     seed: Optional[int] = 42,
     enrichment_method: str = "mean_difference",
+    direction: str = "up",
+    covariate_cols: Optional[list] = None,
 ) -> pd.DataFrame:
     """
     Run Harbinger analysis on a longitudinal dataframe.
@@ -141,6 +144,44 @@ def harbinger(
             mean(case correlations) − mean(ctrl correlations). Captures shape,
             direction, and oscillation — patterns missed by mean_difference.
 
+    direction : str
+        Which enrichment direction to surface in top-k results.
+
+        "up" (default)
+            Cases elevated above controls. Backward-compatible behaviour.
+            Ranks by enrichment_score descending.
+
+        "down"
+            Cases depressed below controls (e.g. immune suppression, tolerance).
+            Ranks by enrichment_score ascending (most negative first).
+            The permutation p-value tests whether the observed score is
+            significantly more negative than the null distribution.
+
+        "both"
+            Surface the strongest hits in either direction. Ranks by
+            abs(enrichment_score) descending. Adds a ``direction`` column
+            ('up' or 'down') to label each feature. The permutation p-value
+            is two-sided: fraction of |null scores| ≥ |observed score|.
+
+    covariate_cols : list of str, optional
+        Column names in ``df`` to use for stratified permutation testing.
+        Labels are shuffled only within strata defined by the unique
+        combinations of these covariate values, preserving the covariate
+        distribution under the null hypothesis.
+
+        Use this when a covariate (e.g. sex, age group, batch) is imbalanced
+        between cases and controls — without stratification, a harbinger hit
+        could reflect the covariate rather than the group trajectory.
+
+        Covariate columns must be present in ``df`` and should be categorical
+        or pre-binned.  Columns with more than 10 unique values trigger a
+        warning — consider binning continuous variables first (e.g.
+        ``pd.qcut(df['age'], q=4, labels=['Q1','Q2','Q3','Q4'])``).
+
+        Subjects in a stratum where all members share the same outcome label
+        (entirely cases or entirely controls) are left unchanged — there is
+        nothing to permute in a homogeneous stratum.
+
     Returns
     -------
     pd.DataFrame
@@ -148,18 +189,22 @@ def harbinger(
           feature            — feature name
           window_size        — the winning window size (int) for this feature
           motif_window       — (start, end) timepoint tuple of the best motif
-          enrichment_score   — mean(case values) − mean(ctrl values) in window
-          p_value            — fraction of permutations with score ≥ observed
+          enrichment_score   — signed raw score: mean(case) − mean(ctrl)
+          p_value            — permutation p-value (one- or two-sided per direction)
           q_value            — Benjamini-Hochberg FDR-adjusted p-value across
                                all features tested (computed before top_k filter)
           matrix_profile_min — minimum pan-matrix-profile value (motif strength)
-        Sorted by enrichment_score descending, at most top_k rows.
+          direction          — 'up' or 'down' (only present when direction='both')
+        Sorted by enrichment_score descending ('up'), ascending ('down'), or
+        abs(enrichment_score) descending ('both'). At most top_k rows.
 
     Raises
     ------
     ValueError
         If window_size >= n_timepoints (single-size backward-compat check).
         If more than one of window_size, window_sizes, window_size_range is given.
+        If direction is not 'up', 'down', or 'both'.
+        If any column in covariate_cols is not present in df.
 
     Examples
     --------
@@ -169,10 +214,48 @@ def harbinger(
     >>> results = harbinger(df, window_size=3, top_k=5)
     >>> results.head()
 
+    >>> # Downward enrichment (cases suppressed below controls)
+    >>> results = harbinger(df, window_size=3, direction='down')
+
+    >>> # Both directions
+    >>> results = harbinger(df, window_size=3, direction='both')
+
     >>> # Multi-window scan
     >>> results = harbinger(df, window_sizes=[2, 3, 4], top_k=5)
     >>> results = harbinger(df, window_size_range=(2, 5), top_k=5)
     """
+    if direction not in ("up", "down", "both"):
+        raise ValueError(
+            f"direction must be 'up', 'down', or 'both', got '{direction}'."
+        )
+
+    if covariate_cols is not None:
+        missing = [c for c in covariate_cols if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"covariate_cols not found in df: {missing}. "
+                f"Available columns: {df.columns.tolist()}"
+            )
+        for col in covariate_cols:
+            n_unique = df[col].nunique()
+            if n_unique > 10:
+                warnings.warn(
+                    f"Covariate '{col}' has {n_unique} unique values and may be "
+                    f"continuous. Consider binning it before passing to harbinger() "
+                    f"(e.g. pd.qcut(df['{col}'], q=4, labels=['Q1','Q2','Q3','Q4'])).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        # Extract per-subject covariate values once from the full df.
+        # Values are constant per subject; use first occurrence per subject.
+        _subj_covars = (
+            df.groupby("subject_id")[covariate_cols]
+            .first()
+            .fillna("__missing__")
+        )
+    else:
+        _subj_covars = None
+
     sizes = _resolve_window_sizes(window_size, window_sizes, window_size_range)
 
     rng = np.random.default_rng(seed)
@@ -218,11 +301,16 @@ def harbinger(
 
         enrich_fn = _make_enrichment_fn(enrichment_method)
 
-        # Scan all candidate sizes; pick best by enrichment score.
+        # Scan all candidate sizes; pick best by direction-adjusted score.
         # Also collect every valid (ws, window_tps) pair for the permutation
         # test — needed to correct for the selection bias introduced when
         # multiple window sizes are tried (issue #4).
-        best_score = -np.inf
+        # _apply_direction maps raw scores into a comparable signed value:
+        #   'up'   → score as-is    (higher = better)
+        #   'down' → negated score  (more negative raw = higher signed = better)
+        #   'both' → abs(score)     (larger magnitude = better)
+        best_signed = -np.inf
+        best_raw = None
         best_ws = None
         best_window_tps = None
         best_pan_mp = None
@@ -235,44 +323,57 @@ def harbinger(
             if not np.any(np.isfinite(pan_mp)):
                 continue
             motif_idx = int(np.nanargmin(pan_mp))
-            window_tps = timepoints[motif_idx: motif_idx + ws]
-            score = enrich_fn(wide, case_subj, ctrl_subj, window_tps)
-            candidate_windows.append((ws, window_tps))
-            if score > best_score:
-                best_score = score
-                best_ws = ws
-                best_window_tps = window_tps
-                best_pan_mp = pan_mp
+
+            # Evaluate the matrix-profile argmin and its immediate neighbours
+            # (±1 position).  The pan-matrix profile uses z-normalised Euclidean
+            # distance, which finds the most shape-similar window across cases —
+            # not necessarily the window with the best case-control enrichment.
+            # For motifs with noisy onset timing, the argmin can land one position
+            # away from the true start, causing a larger window size to win when
+            # it accidentally covers the correct start.  Checking argmin ± 1 lets
+            # the enrichment score resolve the tie at essentially no extra cost
+            # (3× per window size; permutation test applies the same max-over-
+            # candidates correction so p-values remain calibrated).
+            for pos in (motif_idx - 1, motif_idx, motif_idx + 1):
+                if pos < 0 or pos + ws > n_tp:
+                    continue
+                window_tps = timepoints[pos: pos + ws]
+                score = enrich_fn(wide, case_subj, ctrl_subj, window_tps)
+                signed = _apply_direction(score, direction)
+                candidate_windows.append((ws, window_tps))
+                if signed > best_signed:
+                    best_signed = signed
+                    best_raw = score
+                    best_ws = ws
+                    best_window_tps = window_tps
+                    best_pan_mp = pan_mp
 
         if best_ws is None:
             continue
 
         # Permutation test.
-        # Single candidate → standard fixed-window test (no selection bias).
         # Multiple candidates → "max-over-candidates" test: each permutation
-        # computes enrichment at every candidate window and takes the max.
-        # This mirrors the real data selection step and corrects the upward
-        # bias in p-values that results from picking the best window.
+        # takes the max direction-adjusted score across all candidate windows,
+        # mirroring the real-data selection step (corrects selection bias).
+        # Stratified permutation: if covariate_cols were given, labels are
+        # shuffled within strata rather than globally.
         all_subj = np.array(case_subj + ctrl_subj)
-        n_cases = len(case_subj)
-        perm_scores = np.empty(n_permutations)
-        if len(candidate_windows) == 1:
-            for i in range(n_permutations):
-                perm = rng.permutation(all_subj)
-                perm_scores[i] = enrich_fn(
-                    wide, perm[:n_cases].tolist(), perm[n_cases:].tolist(), best_window_tps
-                )
-        else:
-            for i in range(n_permutations):
-                perm = rng.permutation(all_subj)
-                perm_case = perm[:n_cases].tolist()
-                perm_ctrl = perm[n_cases:].tolist()
-                perm_scores[i] = max(
-                    enrich_fn(wide, perm_case, perm_ctrl, win_tps)
-                    for _, win_tps in candidate_windows
-                )
+        strata = (
+            _subj_covars.loc[all_subj]
+            .astype(str)
+            .apply(lambda row: "|".join(row), axis=1)
+            .values
+            if _subj_covars is not None else None
+        )
+        perm_signed = np.empty(n_permutations)
+        for i in range(n_permutations):
+            perm_case, perm_ctrl = _permute_labels(all_subj, case_subj, strata, rng)
+            perm_signed[i] = max(
+                _apply_direction(enrich_fn(wide, perm_case, perm_ctrl, win_tps), direction)
+                for _, win_tps in candidate_windows
+            )
 
-        p_value = float(np.mean(perm_scores >= best_score))
+        p_value = float(np.mean(perm_signed >= best_signed))
         motif_start = best_window_tps[0]
         motif_end = best_window_tps[-1]
 
@@ -280,27 +381,32 @@ def harbinger(
             "feature": feature,
             "window_size": best_ws,
             "motif_window": (motif_start, motif_end),
-            "enrichment_score": round(best_score, 6),
+            "enrichment_score": round(best_raw, 6),
             "p_value": round(p_value, 4),
             "matrix_profile_min": round(float(np.nanmin(best_pan_mp)), 6),
         })
 
+    base_cols = ["feature", "window_size", "motif_window", "enrichment_score",
+                 "p_value", "q_value", "matrix_profile_min"]
     if not records:
-        return pd.DataFrame(
-            columns=["feature", "window_size", "motif_window", "enrichment_score",
-                     "p_value", "q_value", "matrix_profile_min"]
-        )
+        cols = base_cols + (["direction"] if direction == "both" else [])
+        return pd.DataFrame(columns=cols)
 
     out = pd.DataFrame(records)
     out["q_value"] = _bh_correct(out["p_value"].values)
     out["q_value"] = out["q_value"].round(4)
 
-    return (
-        out
-        .sort_values("enrichment_score", ascending=False)
-        .reset_index(drop=True)
-        .head(top_k)
-    )
+    if direction == "up":
+        out = out.sort_values("enrichment_score", ascending=False)
+    elif direction == "down":
+        out = out.sort_values("enrichment_score", ascending=True)
+    else:  # "both"
+        out["direction"] = out["enrichment_score"].apply(
+            lambda x: "up" if x >= 0 else "down"
+        )
+        out = out.sort_values("enrichment_score", key=lambda s: s.abs(), ascending=False)
+
+    return out.reset_index(drop=True).head(top_k)
 
 
 def compute_matrix_profile(
@@ -364,6 +470,78 @@ def compute_matrix_profile(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _permute_labels(
+    all_subj: np.ndarray,
+    case_subj: list,
+    strata: Optional[np.ndarray],
+    rng: np.random.Generator,
+) -> tuple:
+    """Permute case/control labels, optionally within covariate strata.
+
+    Without strata (strata=None): globally shuffle all subject labels —
+    the existing behaviour.
+
+    With strata: shuffle labels *within* each stratum, preserving the number
+    of cases per stratum.  Subjects in a stratum where every member shares
+    the same outcome label (all-case or all-control) are left unchanged —
+    there is nothing to permute in a homogeneous stratum.
+
+    Parameters
+    ----------
+    all_subj : np.ndarray
+        1D array of all subject IDs in the order (cases, controls).
+    case_subj : list
+        Subject IDs that are cases in the observed data.
+    strata : np.ndarray or None
+        1D array of stratum labels, aligned with all_subj.
+        None triggers the global (unstratified) path.
+    rng : np.random.Generator
+        Random number generator for reproducibility.
+
+    Returns
+    -------
+    (perm_case, perm_ctrl) — lists of subject IDs for one permutation.
+    """
+    if strata is None:
+        n_cases = len(case_subj)
+        perm = rng.permutation(all_subj)
+        return perm[:n_cases].tolist(), perm[n_cases:].tolist()
+
+    case_set = set(case_subj)
+    is_case = np.array([s in case_set for s in all_subj])
+    perm_is_case = is_case.copy()
+
+    for stratum in np.unique(strata):
+        idx = np.where(strata == stratum)[0]
+        if len(idx) < 2:
+            continue  # singleton — nothing to shuffle
+        n_cases_s = int(is_case[idx].sum())
+        if n_cases_s == 0 or n_cases_s == len(idx):
+            continue  # homogeneous stratum — nothing to shuffle
+        shuffled = rng.permutation(len(idx))
+        perm_is_case[idx] = is_case[idx[shuffled]]
+
+    return all_subj[perm_is_case].tolist(), all_subj[~perm_is_case].tolist()
+
+
+def _apply_direction(score: float, direction: str) -> float:
+    """Map a raw enrichment score to a direction-adjusted comparable value.
+
+    'up'   → score as-is  (higher raw score = better)
+    'down' → -score        (more negative raw score = higher signed = better)
+    'both' → abs(score)    (larger magnitude in either direction = better)
+
+    Used consistently in window selection, permutation test, and p-value
+    computation so that all three steps respect the requested direction.
+    """
+    if direction == "up":
+        return score
+    elif direction == "down":
+        return -score
+    else:
+        return abs(score)
+
+
 def _window_enrichment(
     wide: pd.DataFrame,
     case_subj: list,
@@ -384,28 +562,42 @@ def _window_enrichment_template_corr(
 ) -> float:
     """Template-correlation enrichment: mean(case Pearson r) − mean(ctrl Pearson r).
 
-    Template = mean case trajectory in window. Called fresh per permutation iteration
-    so the template is always recomputed from the current (permuted) case group —
-    this prevents bias in the null distribution.
+    Case subjects are scored using a leave-one-out (LOO) template — each case
+    is correlated against the mean of all OTHER cases. This removes the in-sample
+    circularity that occurs when a subject contributes to the template it is then
+    scored against, which inflates case correlations and produces anti-conservative
+    p-values at small n_cases.
+
+    Control subjects are scored against the full case template (mean of all cases)
+    since they have no in-sample contribution.
+
+    Called fresh per permutation iteration so the template is always recomputed
+    from the current (permuted) case group.
     """
     if not case_subj:
         return 0.0
     case_vals = wide.loc[case_subj, window_tps].values.astype(float)
-    template = case_vals.mean(axis=0)
-    if template.std() < 1e-8:
-        return 0.0
 
-    def _r(row):
-        if row.std() < 1e-8:
+    def _r(row, tmpl):
+        if row.std() < 1e-8 or tmpl.std() < 1e-8:
             return 0.0
-        c = np.corrcoef(row, template)[0, 1]
+        c = np.corrcoef(row, tmpl)[0, 1]
         return float(0.0 if np.isnan(c) else c)
 
-    case_corrs = np.array([_r(case_vals[i]) for i in range(len(case_subj))])
+    # LOO case correlations: each case scored against the template built from
+    # all other cases, eliminating the in-sample upward bias.
+    n_cases = len(case_subj)
+    case_corrs = np.empty(n_cases)
+    for i in range(n_cases):
+        loo_template = np.delete(case_vals, i, axis=0).mean(axis=0)
+        case_corrs[i] = _r(case_vals[i], loo_template)
+
+    # Control correlations: scored against the full case template.
+    full_template = case_vals.mean(axis=0)
     ctrl_corrs = np.zeros(1)
     if ctrl_subj:
         ctrl_vals = wide.loc[ctrl_subj, window_tps].values.astype(float)
-        ctrl_corrs = np.array([_r(ctrl_vals[i]) for i in range(len(ctrl_subj))])
+        ctrl_corrs = np.array([_r(ctrl_vals[i], full_template) for i in range(len(ctrl_subj))])
     return float(case_corrs.mean() - ctrl_corrs.mean())
 
 

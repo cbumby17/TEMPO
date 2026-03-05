@@ -183,10 +183,13 @@ def simulate_continuous(
     ----------
     motif_type : str
         Shape of the embedded motif:
-        "step"        → sustained increase during motif window (e.g., activation)
-        "ramp"        → linear increase during motif window (e.g., gradual expansion)
-        "pulse"       → transient spike at motif window midpoint (e.g., acute response)
-        "oscillating" → alternating +strength / −strength pattern (e.g., oscillatory response)
+        "step"              → sustained increase during motif window (e.g., activation)
+        "ramp"              → linear increase during motif window (e.g., gradual expansion)
+        "pulse"             → transient spike at motif window midpoint (e.g., acute response)
+        "oscillating"       → alternating +strength / −strength pattern (e.g., oscillatory response)
+        "pulse_decay"       → exponential decay from peak (slow recovery; low resilience)
+        "pulse_plateau"     → spike then sustained elevation (failure to recover)
+        "pulse_underdamped" → spike then damped oscillatory return (overshoot during recovery)
     motif_strength : float
         Amplitude of the motif signal in units of noise_sd.
     baseline_mean : float
@@ -357,9 +360,34 @@ def _build_motif_signal(motif_type, motif_window, n_timepoints, strength):
             strength if i % 2 == 0 else -strength for i in range(window_len)
         ]
 
+    elif motif_type == "pulse_decay":
+        # Exponential decay from peak: large initial response, slow return to baseline.
+        # Models a perturbation with low resilience (slow recovery).
+        n_pts = end - start + 1
+        for i in range(n_pts):
+            signal[start + i] = strength * np.exp(-3.0 * i / max(n_pts - 1, 1))
+
+    elif motif_type == "pulse_plateau":
+        # Spike then sustained elevation: feature fails to return to baseline.
+        # Models a perturbation that induces a new equilibrium (no recovery).
+        signal[start] = strength
+        plateau = strength * 0.7
+        for i in range(1, end - start + 1):
+            signal[start + i] = plateau
+
+    elif motif_type == "pulse_underdamped":
+        # Damped oscillatory recovery: feature overshoots baseline before settling.
+        # Models an underdamped return — characteristic of oscillatory immune responses.
+        n_pts = end - start + 1
+        for i in range(n_pts):
+            frac = i / max(n_pts - 1, 1)
+            signal[start + i] = strength * np.exp(-2.0 * frac) * np.cos(2 * np.pi * 1.5 * frac)
+
     else:
         raise ValueError(
-            f"Unknown motif_type '{motif_type}'. Choose from: step, ramp, pulse, oscillating."
+            f"Unknown motif_type '{motif_type}'. "
+            "Choose from: step, ramp, pulse, oscillating, "
+            "pulse_decay, pulse_plateau, pulse_underdamped."
         )
 
     return signal

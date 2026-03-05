@@ -17,8 +17,9 @@ Three functions covering the main study designs:
 
 import numpy as np
 import pandas as pd
-from scipy.stats import CensoredData, logrank as _scipy_logrank
+from scipy.stats import CensoredData, logrank as _scipy_logrank, mannwhitneyu
 from typing import Optional
+from tempo.harbinger import _permute_labels
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ def permutation_test(
     n_permutations: int = 1000,
     outcome_col: str = "outcome",
     seed: Optional[int] = 42,
+    covariate_cols: Optional[list] = None,
 ) -> dict:
     """
     Permutation test for enrichment of a trajectory motif in case subjects.
@@ -58,6 +60,11 @@ def permutation_test(
         Column containing binary outcome labels (1 = case, 0 = control).
     seed : int, optional
         Random seed for reproducibility.
+    covariate_cols : list of str, optional
+        Column names in ``df`` to use for stratified permutation.  Labels
+        are shuffled only within strata defined by combinations of these
+        covariate values, preserving the covariate distribution under the
+        null.  Mirrors the same parameter on ``harbinger()``.
 
     Returns
     -------
@@ -71,18 +78,38 @@ def permutation_test(
     rng = np.random.default_rng(seed)
 
     subject_scores = _subject_window_scores(df, feature, motif_window, outcome_col)
+    all_subj = subject_scores["subject_id"].values
     scores = subject_scores["score"].values
     outcomes = subject_scores[outcome_col].values
 
+    case_subj = all_subj[outcomes == 1].tolist()
     case_mask = outcomes == 1
     obs_score = float(scores[case_mask].mean() - scores[~case_mask].mean())
 
-    # Build null distribution: permute labels, keep scores fixed.
+    # Build per-subject strata if covariate_cols provided.
+    if covariate_cols is not None:
+        subj_covars = (
+            df.groupby("subject_id")[covariate_cols]
+            .first()
+            .fillna("__missing__")
+        )
+        strata = (
+            subj_covars.loc[all_subj]
+            .astype(str)
+            .apply(lambda row: "|".join(row), axis=1)
+            .values
+        )
+    else:
+        strata = None
+
+    # Build null distribution: permute labels (stratified or global).
+    score_map = dict(zip(all_subj, scores))
     null_scores = np.empty(n_permutations)
     for i in range(n_permutations):
-        perm = rng.permutation(outcomes)
-        case_m = perm == 1
-        null_scores[i] = scores[case_m].mean() - scores[~case_m].mean()
+        perm_case, perm_ctrl = _permute_labels(all_subj, case_subj, strata, rng)
+        c_scores = np.array([score_map[s] for s in perm_case])
+        k_scores = np.array([score_map[s] for s in perm_ctrl])
+        null_scores[i] = c_scores.mean() - k_scores.mean()
 
     p_value = float(np.mean(null_scores >= obs_score))
 
@@ -377,6 +404,299 @@ def survival_test(
         raise ValueError(
             f"Unknown method '{method}'. Choose from: 'logrank', 'cox'."
         )
+
+
+def compute_resistance(
+    df: pd.DataFrame,
+    feature: str,
+    perturbation_tp: int,
+    baseline_window: Optional[tuple] = None,
+    outcome_col: Optional[str] = "outcome",
+) -> pd.DataFrame:
+    """
+    Compute per-subject resistance scores: signed peak deflection from baseline.
+
+    In ecological terms, resistance is the ability of a system to remain
+    unchanged when perturbed. Here it is operationalised as the signed
+    peak deflection from the pre-perturbation baseline — the timepoint at
+    which the feature departs furthest (in absolute terms) from baseline.
+    Positive values indicate elevation above baseline; negative values
+    indicate depression below baseline.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with columns: subject_id, timepoint, feature, value.
+    feature : str
+        Feature to evaluate.
+    perturbation_tp : int
+        Timepoint of perturbation onset. Post-perturbation window is all
+        timepoints >= perturbation_tp.
+    baseline_window : tuple of (int, int), optional
+        (start, end) timepoints (inclusive) defining the pre-perturbation
+        baseline. Defaults to all timepoints strictly before perturbation_tp.
+    outcome_col : str or None
+        Column to carry through to the output for downstream group comparisons.
+        Pass None to omit.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per subject with columns:
+        subject_id, baseline_mean, peak_value, resistance [, outcome_col]
+
+        resistance = value_at_peak_deflection − baseline_mean  (signed)
+    """
+    feat_df = df[df["feature"] == feature]
+    timepoints = sorted(feat_df["timepoint"].unique())
+
+    if baseline_window is None:
+        pre_tps = [t for t in timepoints if t < perturbation_tp]
+    else:
+        pre_tps = [t for t in timepoints if baseline_window[0] <= t <= baseline_window[1]]
+
+    post_tps = [t for t in timepoints if t >= perturbation_tp]
+
+    if not pre_tps:
+        raise ValueError(
+            f"No baseline timepoints found before perturbation_tp={perturbation_tp}. "
+            "Provide a baseline_window or use a perturbation_tp > 0."
+        )
+    if not post_tps:
+        raise ValueError(
+            f"No post-perturbation timepoints at or after perturbation_tp={perturbation_tp}."
+        )
+
+    baseline = (
+        feat_df[feat_df["timepoint"].isin(pre_tps)]
+        .groupby("subject_id")["value"]
+        .mean()
+        .rename("baseline_mean")
+    )
+
+    # Find the signed deflection with largest absolute magnitude.
+    post_df = feat_df[feat_df["timepoint"].isin(post_tps)].copy()
+    post_df = post_df.join(baseline, on="subject_id")
+    post_df["deflection"] = post_df["value"] - post_df["baseline_mean"]
+
+    def _peak_signed(grp):
+        idx = grp["deflection"].abs().idxmax()
+        return pd.Series({
+            "peak_value": grp.loc[idx, "value"],
+            "resistance": grp.loc[idx, "deflection"],
+        })
+
+    result = post_df.groupby("subject_id").apply(_peak_signed).reset_index()
+    result = result.join(baseline, on="subject_id")
+
+    if outcome_col is not None and outcome_col in feat_df.columns:
+        outcome_map = feat_df.groupby("subject_id")[outcome_col].first()
+        result[outcome_col] = result["subject_id"].map(outcome_map)
+
+    return result[["subject_id", "baseline_mean", "peak_value", "resistance"]
+                  + ([outcome_col] if outcome_col is not None and outcome_col in result.columns else [])]
+
+
+def compute_resilience(
+    df: pd.DataFrame,
+    feature: str,
+    perturbation_tp: int,
+    baseline_window: Optional[tuple] = None,
+    recovery_threshold: float = 0.2,
+    outcome_col: Optional[str] = "outcome",
+) -> pd.DataFrame:
+    """
+    Compute per-subject resilience: how quickly each subject returns to baseline.
+
+    Resilience is operationalised as the speed of recovery after a perturbation.
+    For each subject, the function identifies the timepoint of peak deflection
+    from baseline, then finds the first subsequent timepoint at which the
+    feature has returned to within recovery_threshold × |peak_deflection| of
+    the baseline mean. Subjects that do not recover within the observation
+    window receive time_to_recovery = inf and resilience_index = 0.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with columns: subject_id, timepoint, feature, value.
+    feature : str
+        Feature to evaluate.
+    perturbation_tp : int
+        Timepoint of perturbation onset.
+    baseline_window : tuple of (int, int), optional
+        (start, end) timepoints defining the pre-perturbation baseline.
+        Defaults to all timepoints strictly before perturbation_tp.
+    recovery_threshold : float
+        Fraction of peak deflection that counts as "recovered". A subject is
+        considered recovered at the first post-peak timepoint where
+        |value − baseline_mean| ≤ recovery_threshold × |peak_deflection|.
+        Default 0.2 (i.e., within 20 % of the peak excursion).
+    outcome_col : str or None
+        Column to carry through to the output.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per subject with columns:
+        subject_id, peak_tp, time_to_recovery, resilience_index [, outcome_col]
+
+        time_to_recovery — number of timepoint steps from peak to recovery
+                           (inf if not recovered within the window)
+        resilience_index — 1 / time_to_recovery; 0 for non-recoverers;
+                           higher = faster recovery = greater resilience
+    """
+    feat_df = df[df["feature"] == feature]
+    timepoints = sorted(feat_df["timepoint"].unique())
+
+    if baseline_window is None:
+        pre_tps = [t for t in timepoints if t < perturbation_tp]
+    else:
+        pre_tps = [t for t in timepoints if baseline_window[0] <= t <= baseline_window[1]]
+
+    post_tps = [t for t in timepoints if t >= perturbation_tp]
+
+    if not pre_tps:
+        raise ValueError(
+            f"No baseline timepoints before perturbation_tp={perturbation_tp}."
+        )
+    if not post_tps:
+        raise ValueError(
+            f"No post-perturbation timepoints at or after perturbation_tp={perturbation_tp}."
+        )
+
+    baseline = (
+        feat_df[feat_df["timepoint"].isin(pre_tps)]
+        .groupby("subject_id")["value"]
+        .mean()
+    )
+
+    post_df = feat_df[feat_df["timepoint"].isin(post_tps)].copy().sort_values("timepoint")
+    post_df = post_df.join(baseline.rename("baseline_mean"), on="subject_id")
+    post_df["deflection"] = post_df["value"] - post_df["baseline_mean"]
+
+    records = []
+    for subj, grp in post_df.groupby("subject_id"):
+        grp = grp.sort_values("timepoint")
+        abs_deflections = grp["deflection"].abs()
+        peak_idx = abs_deflections.idxmax()
+        peak_tp = grp.loc[peak_idx, "timepoint"]
+        peak_abs = abs_deflections[peak_idx]
+        thr = recovery_threshold * max(peak_abs, 1e-8)
+
+        # Timepoints after the peak
+        after_peak = grp[grp["timepoint"] > peak_tp]
+        recovered = after_peak[after_peak["deflection"].abs() <= thr]
+
+        if len(recovered) > 0:
+            recovery_tp = recovered["timepoint"].iloc[0]
+            # time_to_recovery in timepoint units
+            ttp = recovery_tp - peak_tp
+            ri = 1.0 / max(ttp, 1)
+        else:
+            ttp = float("inf")
+            ri = 0.0
+
+        records.append({
+            "subject_id": subj,
+            "peak_tp": peak_tp,
+            "time_to_recovery": ttp,
+            "resilience_index": ri,
+        })
+
+    result = pd.DataFrame(records)
+
+    if outcome_col is not None and outcome_col in feat_df.columns:
+        outcome_map = feat_df.groupby("subject_id")[outcome_col].first()
+        result[outcome_col] = result["subject_id"].map(outcome_map)
+
+    return result
+
+
+def compare_recovery(
+    df: pd.DataFrame,
+    feature: str,
+    perturbation_tp: int,
+    baseline_window: Optional[tuple] = None,
+    recovery_threshold: float = 0.2,
+    outcome_col: str = "outcome",
+) -> dict:
+    """
+    Compare resistance and resilience between cases and controls.
+
+    Computes per-subject resistance and resilience scores, then summarises
+    and compares them between case (outcome=1) and control (outcome=0)
+    groups using the Mann-Whitney U test (non-parametric, robust to small
+    samples and non-normal distributions).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe with outcome column.
+    feature : str
+        Feature to evaluate.
+    perturbation_tp : int
+        Timepoint of perturbation onset.
+    baseline_window : tuple of (int, int), optional
+        Pre-perturbation baseline window. Defaults to all timepoints
+        before perturbation_tp.
+    recovery_threshold : float
+        Recovery threshold fraction passed to compute_resilience().
+    outcome_col : str
+        Column containing binary outcome labels (1 = case, 0 = control).
+
+    Returns
+    -------
+    dict
+        resistance:
+            case_mean, ctrl_mean, case_sd, ctrl_sd, statistic, p_value
+        resilience:
+            case_mean, ctrl_mean, case_sd, ctrl_sd, statistic, p_value
+            (finite time_to_recovery values only; inf excluded)
+        n_cases, n_controls, feature, perturbation_tp
+    """
+    res_df = compute_resistance(df, feature, perturbation_tp, baseline_window, outcome_col)
+    sil_df = compute_resilience(df, feature, perturbation_tp, baseline_window,
+                                recovery_threshold, outcome_col)
+
+    cases_r = res_df.loc[res_df[outcome_col] == 1, "resistance"].values
+    ctrl_r = res_df.loc[res_df[outcome_col] == 0, "resistance"].values
+
+    # Use finite time_to_recovery only for resilience comparison
+    finite_sil = sil_df[sil_df["time_to_recovery"] != float("inf")]
+    cases_ttp = finite_sil.loc[finite_sil[outcome_col] == 1, "time_to_recovery"].values
+    ctrl_ttp = finite_sil.loc[finite_sil[outcome_col] == 0, "time_to_recovery"].values
+
+    def _mw(a, b):
+        if len(a) < 2 or len(b) < 2:
+            return float("nan"), float("nan")
+        stat, p = mannwhitneyu(a, b, alternative="two-sided")
+        return float(stat), float(p)
+
+    r_stat, r_p = _mw(cases_r, ctrl_r)
+    ttp_stat, ttp_p = _mw(cases_ttp, ctrl_ttp)
+
+    return {
+        "feature": feature,
+        "perturbation_tp": perturbation_tp,
+        "n_cases": int((res_df[outcome_col] == 1).sum()),
+        "n_controls": int((res_df[outcome_col] == 0).sum()),
+        "resistance": {
+            "case_mean": round(float(np.mean(cases_r)), 6) if len(cases_r) else float("nan"),
+            "ctrl_mean": round(float(np.mean(ctrl_r)), 6) if len(ctrl_r) else float("nan"),
+            "case_sd": round(float(np.std(cases_r)), 6) if len(cases_r) else float("nan"),
+            "ctrl_sd": round(float(np.std(ctrl_r)), 6) if len(ctrl_r) else float("nan"),
+            "statistic": round(r_stat, 4) if not np.isnan(r_stat) else float("nan"),
+            "p_value": round(r_p, 4) if not np.isnan(r_p) else float("nan"),
+        },
+        "resilience": {
+            "case_mean": round(float(np.mean(cases_ttp)), 6) if len(cases_ttp) else float("nan"),
+            "ctrl_mean": round(float(np.mean(ctrl_ttp)), 6) if len(ctrl_ttp) else float("nan"),
+            "case_sd": round(float(np.std(cases_ttp)), 6) if len(cases_ttp) else float("nan"),
+            "ctrl_sd": round(float(np.std(ctrl_ttp)), 6) if len(ctrl_ttp) else float("nan"),
+            "statistic": round(ttp_stat, 4) if not np.isnan(ttp_stat) else float("nan"),
+            "p_value": round(ttp_p, 4) if not np.isnan(ttp_p) else float("nan"),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
