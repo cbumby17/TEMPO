@@ -372,6 +372,25 @@ is mean(case values) − mean(control values). A permutation test converts this
 to a p-value by randomly shuffling case/control labels 999 times, building a
 null distribution of scores expected if outcome assignment were random.
 
+**Enrichment methods:** two scoring methods are available via the
+`enrichment_method` argument:
+
+- `"mean_difference"` (default) — mean(case values) − mean(control values) at
+  the motif window. Simple and interpretable; the null value is 0.
+- `"template_correlation"` — builds a case-mean template from the motif window,
+  then scores each subject by Pearson correlation with that template. Cases that
+  match the pattern closely score high; controls that do not score low. The
+  enrichment score is scaled to [−2, 2] (difference in mean correlations). This
+  method is more sensitive when the motif shape is consistent across cases but
+  the amplitude varies (e.g. oscillating or underdamped responses).
+
+**Candidate window expansion (`motif_candidates`):** by default, harbinger
+evaluates the pan-matrix-profile argmin and its two immediate neighbours
+(argmin±1). Setting `motif_candidates=k` instead evaluates the *k* most
+shape-conserved positions across all cases, letting the enrichment score choose
+the most discriminative among them. Useful when the motif onset is ambiguous or
+the signal is spread across multiple plausible positions (recommended: 5–10).
+
 **Caveat:** scanning multiple window sizes introduces a mild selection bias.
 Treat these p-values as exploratory; use a fixed, pre-specified window for
 confirmatory testing (section 7).
@@ -385,6 +404,52 @@ results = tempo.harbinger(df, window_size_range=(3, 6), top_k=15, n_permutations
 print("Harbinger results (top 15 features, sorted by enrichment score):")
 print(results[['feature', 'window_size', 'motif_window',
                'enrichment_score', 'p_value', 'q_value']].to_string(index=False))
+\
+"""),
+
+md("""\
+### 4a  Template-correlation enrichment
+
+The default enrichment method (`mean_difference`) asks: "are case values higher
+than control values in this window?" The `template_correlation` method asks a
+subtly different and often more powerful question: "do cases follow a consistent
+*shape* during this window, and do controls deviate from that shape?"
+
+The algorithm builds a case-mean template — the average trajectory of all case
+subjects across the window — and scores each subject by Pearson *r* with that
+template. The enrichment score is the difference in mean correlation between
+cases and controls, scaled to [−2, 2]. Because it rewards shape fidelity rather
+than raw amplitude, it performs better for motifs where cases agree on the
+*direction* of change but vary in magnitude (oscillating, underdamped, or
+signal-varied step motifs).
+
+A value of `motif_candidates=5` is added here to illustrate the expanded window
+search: instead of evaluating only argmin±1, harbinger evaluates the 5 most
+shape-conserved pan-MP positions and selects whichever gives the strongest
+case/control separation.
+\
+"""),
+
+code("""\
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore')
+    results_tc = tempo.harbinger(
+        df,
+        window_size_range=(3, 6),
+        top_k=15,
+        n_permutations=999,
+        seed=42,
+        enrichment_method='template_correlation',
+        motif_candidates=5,
+    )
+
+print("Template-correlation results (top 15 features):")
+print(results_tc[['feature', 'window_size', 'motif_window',
+                   'enrichment_score', 'p_value', 'q_value']].to_string(index=False))
+print()
+print("Note: enrichment_score range for template_correlation is [−2, 2].")
+print("Compare top-feature rankings with the mean_difference run above.")
 \
 """),
 
@@ -945,6 +1010,134 @@ print(f"Detected window                 : {top_det_win}  (true: (3, 8))")
 print(f"Feature recall    = {rep_surv['feature_recall']:.3f}")
 print(f"Feature precision = {rep_surv['feature_precision']:.3f}")
 print(f"Window Jaccard    = {rep_surv['window_jaccard']:.3f}")\
+"""),
+
+
+# ── 12  Resistance and Resilience ────────────────────────────────────────────
+md("""\
+---
+## 12  Resistance and Resilience After a Perturbation
+
+Trajectory motifs tell us *which* features diverge and *when*. But for
+perturbation biology — a dietary challenge, a vaccine dose, an acute infection
+— two additional ecological concepts describe *how* a subject's response unfolds:
+
+**Resistance** is the magnitude of the peak deflection from baseline. A
+low-resistance subject is strongly displaced by the perturbation; a
+high-resistance subject barely moves. Formally, resistance is the signed
+difference between the subject's value at the perturbation timepoint and their
+mean pre-perturbation baseline. The sign preserves direction: positive means the
+feature went up, negative means it went down.
+
+**Resilience** describes the speed and completeness of return to baseline after
+the peak displacement. `compute_resilience()` returns two quantities per subject:
+
+- `time_to_recovery` — number of timepoints elapsed until the trajectory returns
+  to within one standard deviation of the pre-perturbation baseline (or `NaN`
+  if recovery does not occur within the observation window).
+- `resilience_index` — the mean absolute deviation from baseline across the
+  entire post-perturbation window, normalised by the peak deflection. Lower
+  values indicate faster and more complete recovery.
+
+`compare_recovery()` performs a Mann-Whitney U test comparing resistance or
+resilience between cases and controls, telling you whether the two groups differ
+systematically in *how much* they were perturbed or *how quickly* they recovered.
+
+`plot_resistance_resilience()` produces a three-panel figure: individual
+trajectories with the perturbation timepoint marked, plus strip plots of
+resistance and resilience indices for cases vs controls.
+
+These metrics are most interpretable when:
+1. Subjects start from a shared baseline (the same condition as harbinger).
+2. A clear perturbation timepoint can be specified (e.g. day 0 of a dietary
+   intervention, time of transplant, vaccination day).
+3. Post-perturbation follow-up is long enough to observe at least partial
+   recovery in some subjects.
+\
+"""),
+
+code("""\
+# ── Simulate a perturbation-response dataset ──────────────────────────────────
+# Framing: 40 subjects (20 cases, 20 controls) measured over 14 timepoints.
+# The perturbation occurs at timepoint 3.  Cases show a pulse motif —
+# a transient elevation followed by return toward baseline.
+# Controls either do not respond or recover faster.
+
+df_rr = simulate.simulate_continuous(
+    n_subjects=40, n_timepoints=14, n_features=6, n_cases=20,
+    motif_features=[0, 1],          # features 0 and 1 carry the pulse motif
+    motif_window=(3, 9),            # elevated between timepoints 3 and 9
+    motif_type='pulse',             # pulse: up then back to baseline
+    motif_strength=3.0,
+    noise_sd=0.4,
+    seed=7,
+)
+
+print(f"Shape    : {df_rr.shape}")
+print(f"Subjects : {df_rr['subject_id'].nunique()} "
+      f"({(df_rr['outcome']==1).groupby(df_rr['subject_id']).first().sum()} cases, "
+      f"{(df_rr['outcome']==0).groupby(df_rr['subject_id']).first().sum()} controls)")
+print(f"Features : {df_rr['feature'].nunique()}")
+print()
+
+perturbation_tp = 3   # perturbation occurs at this timepoint\
+"""),
+
+code("""\
+# ── Compute resistance ────────────────────────────────────────────────────────
+# Resistance = signed peak deflection from pre-perturbation baseline.
+# Positive → feature elevated by perturbation; negative → suppressed.
+
+resist = tempo.compute_resistance(df_rr, feature='feature_000',
+                                  perturbation_tp=perturbation_tp)
+print("Resistance (feature_000) — first 8 subjects:")
+print(resist.head(8).to_string(index=False))
+print()
+
+# ── Compute resilience ────────────────────────────────────────────────────────
+# Resilience: time_to_recovery (timepoints until back within ±1 SD of baseline)
+# and resilience_index (mean |deviation| / peak deflection across recovery window).
+
+resil = tempo.compute_resilience(df_rr, feature='feature_000',
+                                 perturbation_tp=perturbation_tp)
+print("Resilience (feature_000) — first 8 subjects:")
+print(resil.head(8).to_string(index=False))
+\
+"""),
+
+code("""\
+# ── Compare recovery between cases and controls ───────────────────────────────
+# Mann-Whitney U test of resistance and resilience between outcome groups.
+
+recovery = tempo.compare_recovery(df_rr, feature='feature_000',
+                                  perturbation_tp=perturbation_tp)
+print("compare_recovery() result:")
+for k, v in recovery.items():
+    if isinstance(v, float):
+        print(f"  {k}: {v:.4f}")
+    else:
+        print(f"  {k}: {v}")
+\
+"""),
+
+code("""\
+# ── Three-panel resistance/resilience plot ────────────────────────────────────
+# Panel 1: individual trajectories with perturbation timepoint marked.
+# Panel 2: resistance (peak deflection) strip plot — cases vs controls.
+# Panel 3: resilience index strip plot — cases vs controls.
+
+fig = tempo.plot_resistance_resilience(
+    df_rr, feature='feature_000', perturbation_tp=perturbation_tp,
+)
+fig.suptitle('Resistance and resilience — feature_000 (pulse motif)',
+             fontsize=11, y=1.01)
+plt.show()
+print()
+print("Interpretation:")
+print("  High resistance = strongly displaced by the perturbation.")
+print("  Low resilience index = fast, complete recovery to baseline.")
+print("  Cases with high resistance AND low resilience may be the most")
+print("  informative for mechanistic follow-up.")\
 """),
 
 ]  # end nb.cells
