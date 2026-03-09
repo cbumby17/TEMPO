@@ -176,7 +176,7 @@ motif_feats = df.attrs['motif_features']   # ['feature_000', 'feature_001', 'fea
 noise_feats = ['feature_005', 'feature_008', 'feature_012']
 window = df.attrs['motif_window']          # (3, 8)
 
-# ── Plot 1: individual trajectories ──────────────────────────────────────────
+# ── Plot 1: group mean ± SD trajectories ─────────────────────────────────────
 fig, axes = plt.subplots(2, 3, figsize=(14, 6), sharey=False)
 
 for row_idx, feat_group in enumerate([motif_feats, noise_feats]):
@@ -184,17 +184,18 @@ for row_idx, feat_group in enumerate([motif_feats, noise_feats]):
         ax = axes[row_idx, col_idx]
         feat_df = df[df['feature'] == feat]
 
-        for subj, grp in feat_df.groupby('subject_id'):
-            outcome = grp['outcome'].iloc[0]
-            color = case_color if outcome == 1 else ctrl_color
-            alpha = 0.55 if outcome == 1 else 0.30
-            ax.plot(grp['timepoint'], grp['value'], color=color, alpha=alpha, lw=1.1)
+        for outcome, label, color in [(1, 'Cases', case_color), (0, 'Controls', ctrl_color)]:
+            grp = feat_df[feat_df['outcome'] == outcome].groupby('timepoint')['value']
+            means, stds = grp.mean(), grp.std()
+            ax.plot(means.index, means.values, color=color, lw=2, label=label)
+            ax.fill_between(means.index, means - stds, means + stds,
+                            color=color, alpha=0.18)
 
         ax.axvspan(window[0], window[1], alpha=0.12, color='gold')
         ax.axvline(window[0], color='goldenrod', lw=0.8, ls='--')
         ax.axvline(window[1], color='goldenrod', lw=0.8, ls='--')
-        label = f'{feat}\\n(signal)' if row_idx == 0 else f'{feat}\\n(noise)'
-        ax.set_title(label, fontsize=9)
+        label_title = f'{feat}\\n(signal)' if row_idx == 0 else f'{feat}\\n(noise)'
+        ax.set_title(label_title, fontsize=9)
         ax.set_xlabel('Timepoint')
         if col_idx == 0:
             ax.set_ylabel('Proportion')
@@ -204,7 +205,7 @@ ctrl_patch = mpatches.Patch(color=ctrl_color, label='Controls', alpha=0.7)
 window_patch = mpatches.Patch(color='gold', label='Motif window (truth)', alpha=0.4)
 fig.legend(handles=[case_patch, ctrl_patch, window_patch],
            loc='upper right', bbox_to_anchor=(1.01, 0.98))
-fig.suptitle('Individual trajectories: signal features (top) vs noise features (bottom)',
+fig.suptitle('Group mean ± SD: signal features (top) vs noise features (bottom)',
              fontsize=11, y=1.02)
 plt.tight_layout()
 plt.show()
