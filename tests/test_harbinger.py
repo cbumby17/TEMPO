@@ -884,3 +884,99 @@ class TestStratifiedPermutation:
             assert 'a1' in perm_case
             assert 'a2' in perm_case
             assert 'a3' in perm_case
+
+
+# ---------------------------------------------------------------------------
+# NaN value interpolation in T_case
+# ---------------------------------------------------------------------------
+
+class TestNaNInterpolation:
+    """harbinger() must handle NaN values within existing timepoints.
+
+    NaN entries in the wide pivot (value missing for a subject at a timepoint
+    that otherwise exists) caused stumpy.mstump to return all-inf, silently
+    dropping every feature.  The fix interpolates NaNs along the timepoint
+    axis before passing to STUMPY; the enrichment score still uses the
+    original (uninterpolated) wide DataFrame.
+    """
+
+    def _make_df_with_nan(self, seed=42):
+        df = simulate.simulate_continuous(
+            n_subjects=20, n_timepoints=8, n_features=4, n_cases=8,
+            motif_features=[0], motif_window=(2, 5),
+            motif_type="step", motif_strength=6.0, noise_sd=0.3,
+            seed=seed,
+        )
+        # Inject a NaN value into a case subject's mid-series timepoint
+        case_subj = df[df["outcome"] == 1]["subject_id"].unique()[0]
+        mask = (df["subject_id"] == case_subj) & (df["timepoint"] == 4) & (df["feature"] == "feature_000")
+        df.loc[mask, "value"] = np.nan
+        return df
+
+    def test_nan_value_does_not_crash(self):
+        """NaN in a case subject value should not prevent harbinger from returning results."""
+        df = self._make_df_with_nan()
+        result = harbinger(df, window_size=3, top_k=4, n_permutations=20, seed=0)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_nan_value_motif_feature_still_recovered(self):
+        """True motif feature should still appear in results despite a NaN."""
+        df = self._make_df_with_nan()
+        result = harbinger(df, window_size=3, top_k=4, n_permutations=50, seed=0)
+        assert "feature_000" in result["feature"].values
+
+
+# ---------------------------------------------------------------------------
+# motif_candidates parameter
+# ---------------------------------------------------------------------------
+
+class TestMotifCandidates:
+    """motif_candidates controls how many pan-MP positions are evaluated."""
+
+    def test_default_none_returns_results(self):
+        """Default (None) mode should work as before."""
+        df = simulate.simulate_continuous(
+            n_subjects=20, n_timepoints=12, n_features=4, n_cases=8,
+            motif_features=[0], motif_window=(3, 7),
+            motif_type="step", motif_strength=6.0, noise_sd=0.3, seed=10,
+        )
+        result = harbinger(df, window_size=4, n_permutations=20, seed=0,
+                           motif_candidates=None)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_top_k_mode_returns_results(self):
+        """Top-K mode (motif_candidates=5) should return results."""
+        df = simulate.simulate_continuous(
+            n_subjects=20, n_timepoints=12, n_features=4, n_cases=8,
+            motif_features=[0], motif_window=(3, 7),
+            motif_type="step", motif_strength=6.0, noise_sd=0.3, seed=10,
+        )
+        result = harbinger(df, window_size=4, n_permutations=20, seed=0,
+                           motif_candidates=5)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_top_k_recovers_motif_feature(self):
+        """Top-K mode should still identify the planted motif feature."""
+        df = simulate.simulate_continuous(
+            n_subjects=30, n_timepoints=12, n_features=6, n_cases=12,
+            motif_features=[0], motif_window=(3, 7),
+            motif_type="step", motif_strength=8.0, noise_sd=0.3, seed=7,
+        )
+        result = harbinger(df, window_size=4, n_permutations=50, seed=0,
+                           motif_candidates=5)
+        assert "feature_000" in result["feature"].values
+
+    def test_large_k_clamped_to_profile_length(self):
+        """motif_candidates larger than the profile length should not crash."""
+        df = simulate.simulate_continuous(
+            n_subjects=20, n_timepoints=8, n_features=3, n_cases=8,
+            motif_features=[0], motif_window=(2, 5),
+            motif_type="step", motif_strength=6.0, noise_sd=0.3, seed=3,
+        )
+        # k=9999 is much larger than profile_len = n_tp - ws + 1
+        result = harbinger(df, window_size=3, n_permutations=20, seed=0,
+                           motif_candidates=9999)
+        assert isinstance(result, pd.DataFrame)

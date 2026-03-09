@@ -87,6 +87,7 @@ def harbinger(
     enrichment_method: str = "mean_difference",
     direction: str = "up",
     covariate_cols: Optional[list] = None,
+    motif_candidates: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Run Harbinger analysis on a longitudinal dataframe.
@@ -162,6 +163,26 @@ def harbinger(
             abs(enrichment_score) descending. Adds a ``direction`` column
             ('up' or 'down') to label each feature. The permutation p-value
             is two-sided: fraction of |null scores| ≥ |observed score|.
+
+    motif_candidates : int, optional
+        Controls how many conserved positions from the pan-matrix profile are
+        evaluated as candidates per window size.
+
+        ``None`` (default — classic mode)
+            Evaluate the argmin of the pan-matrix profile and its two
+            immediate neighbours (positions argmin−1, argmin, argmin+1).
+            Fast; backward-compatible with all previous results.
+
+        ``int`` (top-K mode)
+            Rank all valid positions by their pan-matrix-profile distance
+            (ascending — lower distance = more shape-conserved across cases)
+            and evaluate the top-K.  The enrichment score then selects the
+            most discriminative position among the K most conserved ones.
+            Recommended when the motif onset may not coincide with the single
+            most conserved window (e.g. oscillating, pulse_underdamped, or
+            noisy step motifs).  A value of 5–10 covers most cases; the
+            permutation test's max-over-candidates correction ensures
+            p-values remain calibrated regardless of K.
 
     covariate_cols : list of str, optional
         Column names in ``df`` to use for stratified permutation testing.
@@ -298,6 +319,16 @@ def harbinger(
             continue
 
         T_case = wide.loc[case_subj].values.astype(float)
+        # STUMPY mstump returns all-inf when any NaN is present.  Interpolate
+        # NaNs along the timepoint axis (per subject) so the matrix profile
+        # can still find shape-conserved windows.  The enrichment score uses
+        # the original `wide` DataFrame, so observed scores are unaffected.
+        if np.isnan(T_case).any():
+            T_case = (
+                pd.DataFrame(T_case)
+                .interpolate(axis=1, limit_direction="both")
+                .values
+            )
 
         enrich_fn = _make_enrichment_fn(enrichment_method)
 
@@ -322,19 +353,33 @@ def harbinger(
             pan_mp = compute_matrix_profile(T_case, ws)
             if not np.any(np.isfinite(pan_mp)):
                 continue
-            motif_idx = int(np.nanargmin(pan_mp))
 
-            # Evaluate the matrix-profile argmin and its immediate neighbours
-            # (±1 position).  The pan-matrix profile uses z-normalised Euclidean
-            # distance, which finds the most shape-similar window across cases —
-            # not necessarily the window with the best case-control enrichment.
-            # For motifs with noisy onset timing, the argmin can land one position
-            # away from the true start, causing a larger window size to win when
-            # it accidentally covers the correct start.  Checking argmin ± 1 lets
-            # the enrichment score resolve the tie at essentially no extra cost
-            # (3× per window size; permutation test applies the same max-over-
-            # candidates correction so p-values remain calibrated).
-            for pos in (motif_idx - 1, motif_idx, motif_idx + 1):
+            # Select candidate positions from the pan-matrix profile.
+            # Two modes, controlled by motif_candidates:
+            #
+            #   motif_candidates=None (default — classic mode):
+            #     Evaluate the argmin and its two immediate neighbours
+            #     (positions argmin−1, argmin, argmin+1).  The pan-matrix
+            #     profile uses z-normalised Euclidean distance and finds the
+            #     single most shape-similar window across cases.  Checking
+            #     ±1 lets the enrichment score resolve timing ambiguity at
+            #     minimal cost.  Backward-compatible with all prior results.
+            #
+            #   motif_candidates=k (top-K mode):
+            #     Rank all positions by their pan-matrix-profile distance
+            #     (lower = more shape-conserved across cases) and evaluate
+            #     the k most conserved ones.  STUMPY finds the biologically
+            #     plausible candidates; the enrichment score picks the most
+            #     discriminative among them.  Wider search; p-values remain
+            #     calibrated via the max-over-candidates correction.
+            if motif_candidates is None:
+                motif_idx = int(np.nanargmin(pan_mp))
+                positions = [motif_idx - 1, motif_idx, motif_idx + 1]
+            else:
+                k = min(motif_candidates, len(pan_mp))
+                positions = np.argsort(pan_mp)[:k].tolist()
+
+            for pos in positions:
                 if pos < 0 or pos + ws > n_tp:
                     continue
                 window_tps = timepoints[pos: pos + ws]
