@@ -484,7 +484,8 @@ top_window = results['motif_window'].iloc[0]
 print(f"Top 4 features : {top_features}")
 print(f"Motif window   : {top_window}")
 
-fig = tempo.plot_motifs(df_clr, features=top_features, motif_window=top_window)
+fig = tempo.plot_motifs(df_clr, features=top_features, motif_window=top_window,
+                        show_individuals=False)
 fig.suptitle('Top 4 features by enrichment score (CLR-transformed)',
              fontsize=11, y=1.01)
 plt.show()\
@@ -1023,12 +1024,13 @@ Trajectory motifs tell us *which* features diverge and *when*. But for
 perturbation biology — a dietary challenge, a vaccine dose, an acute infection
 — two additional ecological concepts describe *how* a subject's response unfolds:
 
-**Resistance** is the magnitude of the peak deflection from baseline. A
-low-resistance subject is strongly displaced by the perturbation; a
-high-resistance subject barely moves. Formally, resistance is the signed
-difference between the subject's value at the perturbation timepoint and their
-mean pre-perturbation baseline. The sign preserves direction: positive means the
-feature went up, negative means it went down.
+**Resistance** is the ability of a system to remain unchanged when perturbed.
+A high-resistance subject barely moves; a low-resistance subject is strongly
+displaced. Formally, resistance is defined as −|peak deflection from baseline|:
+it is always ≤ 0, with values near zero indicating high resistance (minimal
+displacement) and strongly negative values indicating low resistance (large
+displacement). The direction of displacement can be inferred from the
+`peak_value` and `baseline_mean` columns returned by `compute_resistance()`.
 
 **Resilience** describes the speed and completeness of return to baseline after
 the peak displacement. `compute_resilience()` returns two quantities per subject:
@@ -1086,8 +1088,8 @@ perturbation_tp = 3   # perturbation occurs at this timepoint\
 
 code("""\
 # ── Compute resistance ────────────────────────────────────────────────────────
-# Resistance = signed peak deflection from pre-perturbation baseline.
-# Positive → feature elevated by perturbation; negative → suppressed.
+# Resistance = −|peak deflection from baseline|.  Values ≤ 0; near-zero means
+# barely displaced (high resistance); very negative means strongly displaced.
 
 resist = tempo.compute_resistance(df_rr, feature='feature_000',
                                   perturbation_tp=perturbation_tp)
@@ -1135,9 +1137,10 @@ fig.suptitle('Resistance and resilience — feature_000 (pulse motif)',
 plt.show()
 print()
 print("Interpretation:")
-print("  High resistance = strongly displaced by the perturbation.")
-print("  Low resilience index = fast, complete recovery to baseline.")
-print("  Cases with high resistance AND low resilience may be the most")
+print("  High resistance (near 0) = minimal displacement; resisted the perturbation well.")
+print("  Low resistance (very negative) = strongly displaced by the perturbation.")
+print("  Low time-to-recovery = fast, complete recovery to baseline.")
+print("  Cases with low resistance AND high time-to-recovery may be the most")
 print("  informative for mechanistic follow-up.")\
 """),
 

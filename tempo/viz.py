@@ -512,8 +512,8 @@ def plot_resistance_resilience(
         ax.set_ylabel(ylabel)
         ax.axhline(0, color="grey", lw=0.8, ls="--")
 
-    _strip(ax1, res_df, "resistance", "Resistance\n(peak deflection from baseline)",
-           "Peak deflection (value − baseline)")
+    _strip(ax1, res_df, "resistance", "Resistance\n(−|peak deflection|; higher = more resistant)",
+           "Resistance score (−|deflection from baseline|)")
     _strip(ax2, sil_df, "time_to_recovery", "Resilience\n(time to recovery)",
            "Timepoint steps from peak to recovery", inf_handling=True)
 

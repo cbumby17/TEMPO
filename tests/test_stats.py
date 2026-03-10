@@ -339,12 +339,12 @@ class TestResistanceResilience:
         result = compute_resistance(df_pulse_decay, "feature_000", perturbation_tp=3)
         assert len(result) == n_subj
 
-    def test_cases_have_higher_resistance_than_controls(self, df_pulse_decay):
-        """Cases have embedded pulse_decay motif → larger positive peak deflection."""
+    def test_cases_have_lower_resistance_than_controls(self, df_pulse_decay):
+        """Cases have embedded pulse_decay motif → larger displacement → lower resistance."""
         result = compute_resistance(df_pulse_decay, "feature_000", perturbation_tp=3)
         case_mean = result.loc[result["outcome"] == 1, "resistance"].mean()
         ctrl_mean = result.loc[result["outcome"] == 0, "resistance"].mean()
-        assert case_mean > ctrl_mean
+        assert case_mean < ctrl_mean
 
     def test_resistance_no_outcome_col(self, df_pulse_decay):
         result = compute_resistance(df_pulse_decay, "feature_000", perturbation_tp=3,
@@ -418,7 +418,7 @@ class TestResistanceResilience:
         assert result["n_controls"] == 15
 
     def test_compare_recovery_resistance_p_significant(self, df_pulse_decay):
-        """Strong pulse_decay motif → cases should have significantly larger resistance."""
+        """Strong pulse_decay motif → cases more displaced → significantly lower resistance."""
         result = compare_recovery(df_pulse_decay, "feature_000", perturbation_tp=3)
         p = result["resistance"]["p_value"]
         assert p < 0.05, f"Expected significant resistance difference, got p={p}"

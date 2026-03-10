@@ -417,11 +417,12 @@ def compute_resistance(
     Compute per-subject resistance scores: signed peak deflection from baseline.
 
     In ecological terms, resistance is the ability of a system to remain
-    unchanged when perturbed. Here it is operationalised as the signed
-    peak deflection from the pre-perturbation baseline — the timepoint at
-    which the feature departs furthest (in absolute terms) from baseline.
-    Positive values indicate elevation above baseline; negative values
-    indicate depression below baseline.
+    unchanged when perturbed. Here it is operationalised as the negative
+    absolute peak deflection from baseline: resistance = −|peak_deflection|.
+    Values are always ≤ 0. Subjects near zero were barely displaced (high
+    resistance); strongly negative values indicate large displacement (low
+    resistance). Direction of displacement can be inferred from
+    peak_value − baseline_mean in the output.
 
     Parameters
     ----------
@@ -445,7 +446,7 @@ def compute_resistance(
         One row per subject with columns:
         subject_id, baseline_mean, peak_value, resistance [, outcome_col]
 
-        resistance = value_at_peak_deflection − baseline_mean  (signed)
+        resistance = −|peak_deflection|  (≤ 0; higher = more resistant)
     """
     feat_df = df[df["feature"] == feature]
     timepoints = sorted(feat_df["timepoint"].unique())
@@ -483,7 +484,7 @@ def compute_resistance(
         idx = grp["deflection"].abs().idxmax()
         return pd.Series({
             "peak_value": grp.loc[idx, "value"],
-            "resistance": grp.loc[idx, "deflection"],
+            "resistance": -abs(grp.loc[idx, "deflection"]),
         })
 
     result = post_df.groupby("subject_id").apply(_peak_signed).reset_index()
